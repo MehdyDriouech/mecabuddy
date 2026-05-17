@@ -62,6 +62,13 @@ if (isDemoAuthEnabled() && getCurrentDemoUser() !== null) {
             <button type="submit" class="btn btn-primary btn-block">Se connecter</button>
         </form>
 
+        <div class="login-credentials-box" role="note" aria-label="Identifiants de démonstration">
+            <p class="login-credentials-title">Compte standard</p>
+            <p class="login-credentials-values">
+                <code>demo</code> <span class="login-credentials-sep">/</span> <code>demo</code>
+            </p>
+        </div>
+
     </div>
 <?php endif; ?>
 
@@ -78,7 +85,39 @@ if (isDemoAuthEnabled() && getCurrentDemoUser() !== null) {
     color: inherit;
 }
 .login-error { color: #f87171; font-size: 0.9rem; margin: 0.5rem 0; }
-.btn-block { width: 100%; }
+.login-credentials-box {
+    margin-top: 1.25rem;
+    padding: 0.85rem 1rem;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 107, 53, 0.35);
+    background: rgba(255, 107, 53, 0.08);
+    text-align: center;
+}
+.login-credentials-title {
+    margin: 0 0 0.35rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-primary-light, #ff8f66);
+}
+.login-credentials-values {
+    margin: 0;
+    font-size: 1rem;
+}
+.login-credentials-values code {
+    padding: 0.2rem 0.5rem;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.35);
+    color: var(--text-primary, #fff);
+    font-family: var(--font-mono, monospace);
+    font-size: 0.95rem;
+}
+.login-credentials-sep {
+    margin: 0 0.25rem;
+    opacity: 0.6;
+}
+.btn-block { width: 100%; margin-bottom: 0; }
 </style>
 
 <?php if (isDemoAuthEnabled()): ?>

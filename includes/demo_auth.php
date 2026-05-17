@@ -490,6 +490,7 @@ function demo_auth_seed_users(PDO $pdo): void
     }
 
     $accounts = [
+        ['demo', 'demo', 15, 15],
         ['demo-demo', 'demo-demo', 15, 15],
         ['demo-fairuse', 'demo-fairuse', 50, 50],
     ];

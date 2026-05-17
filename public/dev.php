@@ -150,7 +150,7 @@ require_once __DIR__ . '/../includes/header.php';
         <h2>🔐 Instance démo (auth & quotas)</h2>
         <p class="dev-hint">
             Connexion obligatoire + quotas journaliers (15 tutoriels / 15 Buddy, compteurs séparés).
-            Comptes : <code>demo-demo</code> / <code>demo-demo</code>, <code>demo-fairuse</code> / <code>demo-fairuse</code>.
+            Comptes : <code>demo</code> / <code>demo</code>, <code>demo-demo</code> / <code>demo-demo</code>, <code>demo-fairuse</code> / <code>demo-fairuse</code>.
         </p>
         <label class="toggle-label">
             <input type="checkbox" id="toggle-demo-auth">

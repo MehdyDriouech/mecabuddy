@@ -1,14 +1,58 @@
-# Timeouts PHP longs (génération tutoriel LLM / SSE)
-<IfModule mod_php.c>
-    php_value max_execution_time 0
-    php_value max_input_time 600
+Options -Indexes
+
+# index.php / index.html à la racine, puis réécriture vers public/
+
+DirectoryIndex index.php index.html
+
+
+
+<IfModule mod_rewrite.c>
+
+    RewriteEngine On
+
+
+
+    # Refuser l'accès HTTP direct aux dossiers hors web public
+
+    RewriteRule ^(?:config|includes|sql|data)(?:/|$) - [F,L]
+
+
+
+    # Racine du projet → public/
+
+    RewriteRule ^$ public/ [L]
+
+    RewriteRule ^(?!public/|api/)(.*)$ public/$1 [L]
+
 </IfModule>
+
+
+
+# Timeouts PHP longs (génération tutoriel LLM / SSE) — ignoré si non autorisé par l'hébergeur
+
+<IfModule mod_php.c>
+
+    php_value max_execution_time 0
+
+    php_value max_input_time 600
+
+</IfModule>
+
+
 
 <IfModule mod_php8.c>
+
     php_value max_execution_time 0
+
     php_value max_input_time 600
+
 </IfModule>
 
+
+
 <IfModule mod_headers.c>
+
     Header set Connection keep-alive
+
 </IfModule>
+
