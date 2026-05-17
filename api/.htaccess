@@ -1,0 +1,6 @@
+<IfModule mod_headers.c>
+    <FilesMatch "tutorial_stream\.php$">
+        Header set X-Accel-Buffering "no"
+        Header set Cache-Control "no-cache, no-store"
+    </FilesMatch>
+</IfModule>

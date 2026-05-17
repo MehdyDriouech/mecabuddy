@@ -1,0 +1,14 @@
+# Timeouts PHP longs (génération tutoriel LLM / SSE)
+<IfModule mod_php.c>
+    php_value max_execution_time 0
+    php_value max_input_time 600
+</IfModule>
+
+<IfModule mod_php8.c>
+    php_value max_execution_time 0
+    php_value max_input_time 600
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header set Connection keep-alive
+</IfModule>
