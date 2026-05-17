@@ -214,15 +214,86 @@ input, select, textarea {
     color: var(--text-secondary, #a0aec0);
 }
 
-.demo-auth-account,
-.demo-auth-logout {
-    padding: 0.2rem 0.6rem;
-    font-size: 0.75rem;
-    text-decoration: none;
+/* Menu compte (bandeau démo) */
+.account-menu {
+    position: relative;
+    margin-left: auto;
+    flex-shrink: 0;
 }
 
-.demo-auth-logout {
-    margin-left: auto;
+.account-menu-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.account-menu-toggle[aria-expanded="true"] .account-menu-chevron {
+    transform: rotate(180deg);
+}
+
+.account-menu-chevron {
+    font-size: 0.65rem;
+    opacity: 0.75;
+    line-height: 1;
+    transition: transform 0.15s ease;
+}
+
+.account-menu-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 12.5rem;
+    padding: 0.35rem 0;
+    border-radius: var(--radius-md, 8px);
+    background: var(--surface, #1e2130);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    z-index: calc(var(--z-sticky) + 10);
+}
+
+.account-menu-dropdown[hidden] {
+    display: none !important;
+}
+
+.account-menu-item {
+    display: block;
+    width: 100%;
+    padding: 0.55rem 1rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    text-align: left;
+    color: var(--text-primary, #fff);
+    text-decoration: none;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    line-height: 1.35;
+}
+
+.account-menu-item:hover,
+.account-menu-item:focus-visible {
+    background: rgba(255, 255, 255, 0.08);
+    outline: none;
+}
+
+.account-menu-item:focus-visible {
+    box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.55);
+}
+
+.account-menu-item + .account-menu-item {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+button.account-menu-item {
+    color: #f87171;
+}
+
+button.account-menu-item:hover,
+button.account-menu-item:focus-visible {
+    background: rgba(248, 113, 113, 0.12);
 }
 
 body.page-login .main-content {
@@ -248,9 +319,20 @@ body.page-login .nav-container {
         font-size: 0.72rem;
         gap: 0.35rem 0.65rem;
     }
-    .demo-auth-logout {
-        width: 100%;
+    .account-menu {
         margin-left: 0;
+        width: 100%;
+    }
+
+    .account-menu-toggle {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .account-menu-dropdown {
+        left: 0;
+        right: 0;
+        min-width: 0;
     }
 }
 

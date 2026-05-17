@@ -41,9 +41,9 @@ if (isDemoAuthEnabled() && getCurrentDemoUser() !== null) {
 <?php else: ?>
     <div class="card login-card">
         <p class="login-intro">
-            Quotas journaliers par compte : <strong>15 tutoriels</strong> et <strong>15 questions Buddy</strong> (compteurs séparés).
+            Quotas journaliers : <strong>10 tutoriels</strong> et <strong>25 questions Buddy</strong>.
         </p>
-
+        <br/>
         <form id="demoLoginForm" class="login-form" autocomplete="on">
             <input type="hidden" name="redirect" id="loginRedirect" value="<?= htmlspecialchars($redirect) ?>">
 

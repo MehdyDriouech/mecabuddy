@@ -9,7 +9,7 @@
                 <span class="footer-version">v<?= APP_VERSION ?></span>
             </div>
             <p class="footer-tagline">Ton compagnon mécanique intelligent</p>
-            <p class="footer-copyright">&copy; <?= date('Y') ?> MecaBuddy - Projet éducatif</p>
+            <p class="footer-copyright">&copy; <?= date('Y') ?> MecaBuddy - Proof of Concept</p>
         </div>
     <?php if (defined('APP_DEBUG') && APP_DEBUG): ?>
     <div style="text-align:center;padding:8px 0;font-size:0.75rem;opacity:0.5;">

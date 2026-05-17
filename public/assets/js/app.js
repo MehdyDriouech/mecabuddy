@@ -27,24 +27,70 @@ const MecaBuddy = {
 // ============================================
 document.addEventListener('DOMContentLoaded', () => {
     initNavigation();
-    initDemoAuthLogout();
+    initAccountMenu();
     initServiceWorkerIfAvailable();
 });
 
-function initDemoAuthLogout() {
-    const btn = document.getElementById('demoAuthLogout');
-    if (!btn) {
+async function performDemoLogout() {
+    try {
+        const base = (window.API_URL || '').replace(/\/$/, '');
+        await fetch(`${base}/auth_api.php?action=logout`, { method: 'POST' });
+    } catch (e) {
+        console.warn('Logout démo:', e);
+    }
+    const loginBase = (window.PUBLIC_URL || window.BASE_URL || '').replace(/\/$/, '');
+    window.location.href = `${loginBase}/login.php`;
+}
+
+function initAccountMenu() {
+    const menu = document.getElementById('demoAccountMenu');
+    const toggle = document.getElementById('demoAccountMenuToggle');
+    const dropdown = document.getElementById('demoAccountMenuDropdown');
+    if (!menu || !toggle || !dropdown) {
         return;
     }
-    btn.addEventListener('click', async () => {
-        try {
-            const base = (window.API_URL || '').replace(/\/$/, '');
-            await fetch(`${base}/auth_api.php?action=logout`, { method: 'POST' });
-        } catch (e) {
-            console.warn('Logout démo:', e);
+
+    function setMenuOpen(open) {
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) {
+            dropdown.removeAttribute('hidden');
+        } else {
+            dropdown.setAttribute('hidden', '');
         }
-        const loginBase = (window.PUBLIC_URL || window.BASE_URL || '').replace(/\/$/, '');
-        window.location.href = `${loginBase}/login.php`;
+    }
+
+    function closeMenu() {
+        setMenuOpen(false);
+    }
+
+    toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = toggle.getAttribute('aria-expanded') === 'true';
+        setMenuOpen(!isOpen);
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!menu.contains(e.target)) {
+            closeMenu();
+        }
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeMenu();
+        }
+    });
+
+    const logoutBtn = menu.querySelector('[data-action="logout"]');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', () => {
+            closeMenu();
+            performDemoLogout();
+        });
+    }
+
+    dropdown.querySelectorAll('a.account-menu-item').forEach((link) => {
+        link.addEventListener('click', () => closeMenu());
     });
 }
 

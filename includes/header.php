@@ -99,8 +99,27 @@ if (isDemoAuthEnabled()) {
         if ($geminiLimitsLine !== null): ?>
         <span class="demo-auth-gemini-limits" title="Limites indicatives Google AI Studio (provider global)"><?= htmlspecialchars($geminiLimitsLine) ?></span>
         <?php endif; ?>
-        <a href="<?= htmlspecialchars(PUBLIC_URL . '/account-settings.php') ?>" class="demo-auth-account btn btn-secondary btn-sm">Mon compte</a>
-        <button type="button" class="demo-auth-logout btn btn-secondary btn-sm" id="demoAuthLogout">Déconnexion</button>
+        <div class="account-menu" id="demoAccountMenu">
+            <button
+                type="button"
+                class="account-menu-toggle btn btn-secondary btn-sm"
+                id="demoAccountMenuToggle"
+                aria-expanded="false"
+                aria-haspopup="true"
+                aria-controls="demoAccountMenuDropdown"
+            >
+                Mon compte
+                <span class="account-menu-chevron" aria-hidden="true">▾</span>
+            </button>
+            <div class="account-menu-dropdown" id="demoAccountMenuDropdown" hidden role="menu">
+                <a
+                    href="<?= htmlspecialchars(PUBLIC_URL . '/account-settings.php') ?>"
+                    class="account-menu-item"
+                    role="menuitem"
+                >Réglages du compte</a>
+                <button type="button" class="account-menu-item" role="menuitem" data-action="logout">Déconnexion</button>
+            </div>
+        </div>
     </div>
   <?php endif; ?>
     <!-- Navigation principale -->
