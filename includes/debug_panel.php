@@ -198,6 +198,41 @@ window.DebugPanel = (() => {
     }
   }
 
+  function formatQueryDetail(qd) {
+    if (!qd || (qd.http_status === undefined && qd.raw_result_count === undefined)) {
+      return '';
+    }
+    const parts = [];
+    if (qd.search_provider_attempted) parts.push(qd.search_provider_attempted);
+    if (qd.http_status !== undefined) parts.push('HTTP ' + qd.http_status);
+    if (qd.raw_result_count !== undefined) parts.push('raw=' + qd.raw_result_count);
+    if (qd.after_blacklist_count !== undefined) parts.push('bl=' + qd.after_blacklist_count);
+    if (qd.after_vehicle_filter_count !== undefined) parts.push('veh=' + qd.after_vehicle_filter_count);
+    if (qd.final_count !== undefined) parts.push('final=' + qd.final_count);
+    if (qd.error_code) parts.push(String(qd.error_code));
+    return parts.length ? ' (' + parts.join(', ') + ')' : '';
+  }
+
+  function logQueryDetails(details) {
+    if (!details.length) return;
+    details.forEach((qd, i) => {
+      const added = qd.added ?? 0;
+      const suffix = added > 0
+        ? ` → ${added} source${added > 1 ? 's' : ''}`
+        : ' → 0';
+      const extra = formatQueryDetail(qd);
+      const payload = (qd.http_status !== undefined || qd.rejected_samples)
+        ? { diagnostic: qd }
+        : undefined;
+      this.search(`Requête ${i + 1} : "${qd.query || '?'}"${suffix}${extra}`, payload);
+      if (Array.isArray(qd.rejected_samples) && qd.rejected_samples.length) {
+        qd.rejected_samples.forEach((r) => {
+          this.warn('Rejet', r);
+        });
+      }
+    });
+  }
+
   return {
     start() {
       startTime = Date.now();
@@ -227,13 +262,7 @@ window.DebugPanel = (() => {
       }
       const details = debug.query_details || [];
       if (details.length > 0) {
-        details.forEach((qd, i) => {
-          const added = qd.added ?? 0;
-          const suffix = added > 0
-            ? ` → ${added} source${added > 1 ? 's' : ''}`
-            : ' → 0';
-          this.search(`Requête ${i + 1} : "${qd.query || '?'}"${suffix}`);
-        });
+        logQueryDetails.call(this, details);
       } else if (Array.isArray(debug.queries_run) && debug.queries_run.length > 0) {
         debug.queries_run.forEach((q, i) => {
           this.search(`Requête ${i + 1} : "${q}"`);
@@ -268,6 +297,7 @@ window.DebugPanel = (() => {
 
     injectSSE(eventType, data) {
       const phase = data.phase || eventType;
+      this.info('SSE event reçu', { event: eventType, phase });
       switch (phase) {
         case 'vehicle':
           this.info('Contexte véhicule chargé', data.vehicle || null);
@@ -282,13 +312,7 @@ window.DebugPanel = (() => {
         case 'search_done': {
           const details = data.query_details || [];
           if (details.length > 0) {
-            details.forEach((qd, i) => {
-              const added = qd.added ?? 0;
-              const suffix = added > 0
-                ? ` → ${added} source${added > 1 ? 's' : ''}`
-                : ' → 0';
-              this.search(`Requête ${i + 1} : "${qd.query || '?'}"${suffix}`);
-            });
+            logQueryDetails.call(this, details);
           } else {
             (data.queries_run || []).forEach((q, i) => {
               this.search(`Requête ${i + 1} : "${q}"`);

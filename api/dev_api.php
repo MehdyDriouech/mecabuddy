@@ -287,16 +287,12 @@ function handle_test_search(): void
 {
     require_once __DIR__ . '/../includes/llm_chat.php';
 
-    $results = searchWebForContext('changer plaquettes de frein Peugeot 308');
-    $provider = getLastSearchProvider();
+    $query = trim((string) ($_GET['q'] ?? 'changer plaquettes de frein Peugeot 308'));
+    if ($query === '') {
+        $query = 'changer plaquettes de frein Peugeot 308';
+    }
 
-    sendResponse([
-        'success' => true,
-        'provider' => $provider,
-        'count' => count($results),
-        'results' => array_slice($results, 0, 3),
-        'ssl_mode' => (defined('APP_DEBUG') && APP_DEBUG) ? 'disabled (dev)' : 'enabled (prod)',
-    ]);
+    sendResponse(mecabuddy_probe_web_search($query));
 }
 
 /**

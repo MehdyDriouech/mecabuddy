@@ -35,6 +35,8 @@ function sse_event(string $type, array $data): void
 {
     echo 'event: ' . $type . "\n";
     echo 'data: ' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n\n";
+    // Padding anti-buffering (nginx / reverse proxy) pour que le client reçoive les phases en direct.
+    echo ': ' . str_repeat(' ', 2048) . "\n\n";
     if (ob_get_level()) {
         ob_flush();
     }
@@ -63,11 +65,6 @@ if ($provider === null) {
     sse_event('error', ['message' => 'Aucun provider LLM actif']);
     exit;
 }
-
-sse_event('status', [
-    'phase' => 'vehicle',
-    'message' => 'Chargement du contexte véhicule...',
-]);
 
 $vehContext = getCurrentVehicleContext();
 $sessionVehicleId = isset($_SESSION['vehicle_id']) ? (int) $_SESSION['vehicle_id'] : null;
@@ -101,6 +98,21 @@ $cleanActionPreview = function_exists('tutorial_clean_action_type')
     ? tutorial_clean_action_type($actionType)
     : $actionType;
 
+sse_event('status', [
+    'phase' => 'vehicle',
+    'message' => 'Chargement du contexte véhicule...',
+    'vehicle' => $vehicleLabel,
+    'category' => $vehContext['category'] ?? 'car',
+]);
+
+sse_event('status', [
+    'phase' => 'search',
+    'message' => 'Recherche de documentation spécifique...',
+    'vehicle' => $vehicleLabel,
+    'category' => $vehContext['category'] ?? 'car',
+    'search_query' => $cleanActionPreview,
+]);
+
 $searchMeta = tutorial_run_web_search($actionType, $vehContext);
 $searchResults = $searchMeta['results'];
 $queriesRun = $searchMeta['queries_run'];
@@ -113,14 +125,6 @@ $GLOBALS['_tutorial_query_details'] = $queryDetails;
 $GLOBALS['_tutorial_is_failsafe'] = $isFailsafe;
 
 $searchQueryPreview = $queriesRun[0] ?? $cleanActionPreview;
-
-sse_event('status', [
-    'phase' => 'search',
-    'message' => 'Recherche de documentation spécifique...',
-    'vehicle' => $vehicleLabel,
-    'category' => $vehContext['category'] ?? 'car',
-    'search_query' => $searchQueryPreview,
-]);
 
 $webContextChars = $isFailsafe
     ? 0

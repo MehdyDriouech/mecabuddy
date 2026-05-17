@@ -5,7 +5,7 @@
 ![SQLite](https://img.shields.io/badge/SQLite-défaut-003B57?style=for-the-badge&logo=sqlite)
 ![MySQL](https://img.shields.io/badge/MySQL-optionnel-4479A1?style=for-the-badge&logo=mysql)
 
-**MecaBuddy** est une application web (PHP sans Composer ni framework) qui aide à entretenir et réparer un véhicule : tutoriels personnalisés, assistant **Buddy** avec prise en charge **LLM** optionnelle (Ollama, compatible OpenAI, **Mistral AI**), et couche de sécurité mécanique.
+**MecaBuddy** est une application web (PHP sans Composer ni framework) qui aide à entretenir et réparer un véhicule : tutoriels personnalisés, assistant **Buddy** avec prise en charge **LLM** optionnelle (Ollama, compatible OpenAI / **Google Gemini**, **Mistral AI**), recherche web (Serper ou DuckDuckGo HTML), et couche de sécurité mécanique.
 
 ---
 
@@ -18,7 +18,8 @@
 
 ### 📖 Tutoriels interactifs
 - Génération **LLM** (JSON structuré) si un fournisseur actif est configuré, avec **repli** sur gabarits PHP statiques
-- Flux **SSE** (`api/tutorial_stream.php`) : phases temps réel (véhicule → recherche web → LLM → sauvegarde) ; repli **POST** `tutorial_api.php?action=generate`
+- Flux **SSE** (`api/tutorial_stream.php`) : phases temps réel (`vehicle` → `search` → `search_done` → `llm` → `saving` → `done`) avec anti-buffering (padding SSE) ; repli **POST** `tutorial_api.php?action=generate`
+- **Overlay de chargement** (`tutorial.php`) : messages fixes par phase + **messages humoristiques rotatifs** pendant la phase LLM (fallback si événements SSE retardés) ; nettoyage des timers à `done` / `error`
 - **Pipeline LLM robuste** (`includes/llm_tutorial.php`) :
   - Recherche web en cascade (jusqu’à 3 requêtes) avant l’appel modèle
   - **Passe 1** : métadonnées + outils/pièces (`num_predict` 8192, `format: json`)
@@ -33,18 +34,24 @@
 - Chat multi-tour avec **LLM** si configuré, sinon réponses par motifs (`BuddyBrain`)
 - Ollama : `think: false` (gemma4) ; si `content` vide, extraction de la réponse depuis `message.thinking` (`_mecabuddyExtractOllamaContent`)
 - Contexte véhicule injecté dans le prompt système (`vehicle_context.php`) quand la fiche existe en session
-- **Recherche web** optionnelle pour enrichir les réponses : **Serper** (si clé) puis repli **DuckDuckGo HTML** (sans clé)
-- Requête de recherche enrichie par marque / modèle / année du véhicule ; filtrage best-effort des résultats hors-marque
+- **Recherche web** optionnelle pour enrichir les réponses : **Serper** (si `serper_api_key`) puis repli **DuckDuckGo HTML** (sans clé) — voir `includes/search_helpers.php` + `includes/llm_chat.php`
+- Requête de recherche enrichie par marque / modèle / année du véhicule ; blacklist domaines (fiches techniques, annonces…) ; filtrage best-effort des résultats hors-marque
+- **Mode failsafe** : si aucune source web fiable, le LLM répond sans contexte web (tutoriels et Buddy)
+- Diagnostic recherche : `mecabuddy_probe_web_search()` ; panneau debug détaillé si `APP_DEBUG` ou `debug_panel`
 - Sources web affichées sous les bulles Buddy (`sources[]`) : bloc `[SOURCES]` du LLM, liens markdown, ou repli sur les URLs Serper/DDG
 - Historique des conversations persisté (SQLite / mock), sources sauvegardées dans le `context` JSON
 - En mode debug (`APP_DEBUG`), champ `debug` sur `action=ask` : `web_searched`, `search_provider`, `sources_raw_count`, etc.
 
+### 🔑 Mode démo & BYOK (optionnel)
+- **Authentification démo** (`includes/demo_auth.php`) : comptes seed, quotas journaliers tutoriel / Buddy ; page `public/login.php`
+- **BYOK** (`includes/byok.php`) : clé LLM personnelle chiffrée (ex. Gemini) ; paramètres dans `public/account-settings.php` ; erreurs explicites (`byok_provider_invalid`, quota)
+
 ### ⚙️ Administration POC (`public/dev.php`, si `APP_DEBUG`)
-- Paramètres applicatifs dans **`config/settings.json`** (clé API plaque, fournisseurs LLM avec `api_key`, Serper, mode démo, etc.) — **ne pas versionner** (`config/.gitignore`)
-- Fournisseurs LLM : types **ollama**, **openai_compatible**, **mistral** (endpoint fixe `api.mistral.ai`)
-- Section **Recherche web** : clé Serper optionnelle, bouton **Tester** (`action=test_search`)
+- Paramètres applicatifs dans **`config/settings.json`** (clé API plaque, fournisseurs LLM avec `api_key`, Serper, mode démo, etc.) — **ne pas versionner** (`config/.gitignore`) ; modèle : `config/settings.example.json`
+- Fournisseurs LLM : types **ollama**, **openai_compatible** (Gemini Google AI Studio, OpenAI-like), **mistral** (endpoint fixe `api.mistral.ai`) ; champ optionnel **`chat_path`** (ex. Gemini : `/chat/completions`)
+- Section **Recherche web** : clé Serper optionnelle (recommandée en production / hébergement mutualisé), avertissements si `curl` / `dom` manquants ; bouton **Tester** (`GET test_search?q=…`)
 - Tests plaque / connexion LLM / recherche web via `api/dev_api.php`
-- **Panneau trace debug** (`includes/debug_panel.php`) sur **`tutorial.php`** et **`diagnostic.php`** : activable dans **`dev.php`** (`debug_panel` dans `settings.json`) ; requiert **`APP_DEBUG`** + toggle ; onglets Frontend / Server (tail `error_log`)
+- **Panneau trace debug** (`includes/debug_panel.php`) sur **`tutorial.php`** et **`diagnostic.php`** : activable dans **`dev.php`** (`debug_panel` dans `settings.json`) ; requiert **`APP_DEBUG`** + toggle ; traces overlay tutoriel + SSE ; onglets Frontend / Server (tail `error_log`)
 
 ---
 
@@ -54,7 +61,8 @@
 - **Base de données** :
   - **SQLite** (par défaut) : fichier `data/mecabuddy.sqlite`, créé automatiquement au premier accès ; schéma `sql/schema_sqlite.sql`
   - **MySQL / MariaDB** (optionnel) : définir `USE_MYSQL` à `true` dans `config/config.php` et importer `sql/schema.sql`
-- **Extensions PHP** : `pdo`, `pdo_sqlite`, `json`, `mbstring`, `curl` (LLM / recherche web / tests), `dom` (parsing DuckDuckGo) ; `pdo_mysql` uniquement si MySQL est utilisé
+- **Extensions PHP** : `pdo`, `pdo_sqlite`, `json`, `mbstring`, `curl` (LLM / recherche web / tests), **`dom`** (parsing DuckDuckGo HTML — requis sans Serper) ; `pdo_mysql` uniquement si MySQL est utilisé
+- **Hébergement mutualisé** : DuckDuckGo HTML est souvent bloqué ou non parsable → configurer **Serper** pour des sources fiables ; le mode failsafe LLM reste actif sans moteur web
 - **Hébergement type** : AMPPS, XAMPP, WAMP, MAMP, etc.
 
 ---
@@ -94,7 +102,19 @@ Puis `USE_MYSQL` à `true` et identifiants `DB_*` corrects dans `config/config.p
 
 Les réglages (LLM, plaque, Serper, mode démo…) sont lus/écrits dans **`config/settings.json`** (créé avec des valeurs par défaut si absent, via `config/settings.php`). Ce fichier est listé dans **`config/.gitignore`** : ne jamais committer de secrets (`api_key` Mistral/OpenAI, Serper, plaque).
 
-Chaque fournisseur LLM dans `llm_providers[]` peut inclure : `id`, `name`, `type`, `base_url`, `model`, `api_key` (vide pour Ollama local), `active`.
+Chaque fournisseur LLM dans `llm_providers[]` peut inclure : `id`, `name`, `type`, `base_url`, `model`, `api_key` (vide pour Ollama local), `active`, `chat_path?` (openai_compatible / Gemini).
+
+Exemple Gemini (sans clé réelle) :
+
+```json
+{
+  "type": "openai_compatible",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "model": "gemini-2.5-flash-lite",
+  "chat_path": "/chat/completions",
+  "api_key": "VOTRE_CLE"
+}
+```
 
 ### 5. Permissions
 
@@ -139,13 +159,16 @@ mecabuddy/
 │   ├── header.php, footer.php
 │   ├── debug_panel.php          # Trace debug UI (APP_DEBUG uniquement)
 │   ├── llm_bridge.php, llm_chat.php, llm_tutorial.php
+│   ├── search_helpers.php         # Blacklist, diagnostic DDG, helpers debug recherche
+│   ├── demo_auth.php, byok.php
 │   ├── vehicle_context.php
 │   ├── plate_lookup.php
 │   └── safety_layer.php
 ├── public/
 │   ├── assets/css, assets/js
 │   ├── dev.php
-│   ├── diagnostic.php, index.php, tutorial.php, vehicle.php
+│   ├── diagnostic.php, index.php, login.php, tutorial.php, vehicle.php
+│   ├── account-settings.php       # BYOK utilisateur
 │   └── test_api.php
 ├── sql/
 │   ├── schema.sql               # MySQL
@@ -194,7 +217,7 @@ mecabuddy/
 | POST | `save_settings` | Sauvegarde JSON des paramètres |
 | GET | `test_plate` | Test API plaque |
 | GET | `test_llm&provider_id=` | Test fournisseur LLM (« Réponds juste OK » ; 401/429 explicites) |
-| GET | `test_search` | Test recherche web (requête fixe) ; `provider`, `count`, `results`, `ssl_mode` |
+| GET | `test_search` | Sonde recherche (`?q=` optionnel, défaut plaquettes Peugeot 308) ; `success`, `provider`, `count`, `results`, `error`, `warnings[]`, `debug` (`curl_available`, `dom_available`, `http_status`, `raw_result_count`, `final_count`, `body_hint` si échec, etc.) — **jamais de clé API dans la réponse** |
 
 ---
 
@@ -224,8 +247,10 @@ Analyse des textes (tutoriels, messages) pour repérer des opérations sensibles
    - Configurer un fournisseur LLM actif dans `/dev`
    - Optionnel : clé Serper ; sans clé, DuckDuckGo est utilisé
    - Sur `/diagnostic`, envoyer un message technique (> 3 mots) ; vérifier dans l’onglet Réseau : `debug.web_searched`, `debug.search_provider` (`serper` | `duckduckgo`), `sources` non vide
-5. **Recherche web seule** : `/dev` → section Recherche web → **Tester** → `provider: duckduckgo` ou `serper`, `ssl_mode: disabled (dev)` en local AMPPS
-6. **Tutoriel LLM** (gemma4 / Ollama) : activer le panneau debug sur `tutorial.php` ; logs serveur attendus : passe 1, éventuelle passe 2 (`steps` manquants), `Tutoriel généré — N étapes`
+5. **Recherche web seule** : `/dev` → section Recherche web → **Tester** → vérifier `debug.http_status`, `raw_result_count`, `final_count` ; en local AMPPS : `ssl_mode: disabled (dev)` dans `debug`
+6. **Tutoriel SSE** : générer une vidange avec le panneau debug ; overlay : phases `vehicle` / `search` / messages fun pendant `llm` ; logs `SSE status reçu`, `Rotation messages fun démarrée`
+7. **Tutoriel LLM** (gemma4 / Ollama / Gemini) : logs serveur attendus : passe 1, éventuelle passe 2 (`steps` manquants), `Tutoriel généré — N étapes`
+8. **Failsafe web** : sans Serper sur hébergement bloqué → tutoriel généré quand même, badge failsafe visible
 
 Voir aussi **`context-llm.md`** pour le détail des appels Ollama, du parsing JSON et des fallbacks.
 
@@ -237,8 +262,10 @@ Si curl échoue sur certificats auto-signés (AMPPS), `_mecabuddyCurl()` dans `i
 
 ## 🔮 Pistes d’évolution
 
-- [x] LLM Buddy + tutoriels (Ollama / OpenAI-compatible / Mistral via `settings.json` / page dev)
-- [x] Recherche web Buddy (Serper + repli DuckDuckGo, sources UI, contexte véhicule)
+- [x] LLM Buddy + tutoriels (Ollama / OpenAI-compatible / Gemini / Mistral via `settings.json` / page dev)
+- [x] Recherche web (Serper + repli DuckDuckGo, diagnostic `test_search`, failsafe, sources UI)
+- [x] Overlay tutoriel SSE (phases + messages humoristiques LLM)
+- [x] BYOK + auth démo + quotas
 - [ ] API SIV / plaque réelle selon contrats fournisseurs
 - [ ] PWA / mode hors-ligne
 - [ ] Comptes utilisateurs et auth

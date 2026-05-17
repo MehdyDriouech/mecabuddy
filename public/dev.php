@@ -4,6 +4,8 @@
  */
 
 require_once __DIR__ . '/../config/config.php';
+require_once __DIR__ . '/../includes/search_helpers.php';
+$mbSearchEnv = mecabuddy_get_search_environment();
 
 if (!defined('APP_DEBUG') || !APP_DEBUG) {
     http_response_code(403);
@@ -319,6 +321,22 @@ require_once __DIR__ . '/../includes/header.php';
             DuckDuckGo est actif par défaut sans configuration.
             Serper offre de meilleurs résultats si une clé est fournie.
         </p>
+        <?php if (!$mbSearchEnv['dom_available']): ?>
+        <p class="dev-status dev-status-error" role="alert">
+            L’extension PHP <code>dom</code> est requise pour DuckDuckGo HTML.
+            Activez-la chez l’hébergeur ou configurez une clé Serper.
+        </p>
+        <?php elseif (!$mbSearchEnv['serper_configured']): ?>
+        <p class="dev-status dev-status-warn" role="status">
+            Sans clé Serper, DuckDuckGo HTML est utilisé (souvent bloqué sur hébergement mutualisé).
+            Configurez Serper pour l’instance publique ; le failsafe LLM reste actif si aucune source web.
+        </p>
+        <?php endif; ?>
+        <?php if (!$mbSearchEnv['curl_available']): ?>
+        <p class="dev-status dev-status-error" role="alert">
+            Extension PHP <code>curl</code> indisponible — la recherche web ne fonctionnera pas.
+        </p>
+        <?php endif; ?>
         <div class="form-group">
             <label for="serper-api-key" class="form-label">Clé Serper (optionnel — améliore la qualité)</label>
             <div class="dev-actions-row">
@@ -978,19 +996,38 @@ require_once __DIR__ . '/../includes/header.php';
                 try {
                     const res = await fetch(API_BASE + '/dev_api.php?action=test_search');
                     const data = await res.json().catch(function () { return {}; });
-                    if (!res.ok || !data.success) {
-                        throw new Error(data.error || 'Échec du test de recherche');
-                    }
                     const providerLabel = {
                         serper: 'Serper',
                         duckduckgo: 'DuckDuckGo',
                         none: 'aucun'
                     }[data.provider] || data.provider;
+                    const dbg = data.debug || {};
                     let html = '<strong>Provider :</strong> ' + esc(providerLabel)
-                        + ' · <strong>' + esc(String(data.count)) + '</strong> résultat(s)<br>';
+                        + ' · <strong>' + esc(String(data.count ?? 0)) + '</strong> résultat(s)';
+                    if (data.error) {
+                        html += ' · <strong>Erreur :</strong> ' + esc(String(data.error));
+                    }
+                    html += '<br><small>curl=' + esc(String(dbg.curl_available))
+                        + ' · dom=' + esc(String(dbg.dom_available))
+                        + ' · HTTP ' + esc(String(dbg.http_status ?? '—'))
+                        + ' · body ' + esc(String(dbg.body_length ?? 0))
+                        + ' octets · raw=' + esc(String(dbg.raw_result_count ?? 0))
+                        + ' · blacklist=' + esc(String(dbg.after_blacklist_count ?? 0))
+                        + ' · final=' + esc(String(dbg.final_count ?? 0))
+                        + '</small>';
+                    if (dbg.body_hint) {
+                        html += '<br><small>body_hint : ' + esc(String(dbg.body_hint).slice(0, 300)) + '</small>';
+                    }
+                    if (Array.isArray(data.warnings) && data.warnings.length) {
+                        html += '<ul style="margin:0.35rem 0 0;padding-left:1.2rem;color:var(--warning,#b45309)">';
+                        data.warnings.forEach(function (w) {
+                            html += '<li>' + esc(w) + '</li>';
+                        });
+                        html += '</ul>';
+                    }
                     const rows = Array.isArray(data.results) ? data.results : [];
                     if (rows.length === 0) {
-                        html += 'Aucun résultat (vérifiez la connectivité ou le parsing HTML).';
+                        html += '<p style="margin:0.5rem 0 0">Aucun résultat exploitable.</p>';
                     } else {
                         html += '<ul style="margin:0.5rem 0 0;padding-left:1.2rem">';
                         rows.forEach(function (r) {
@@ -1000,7 +1037,11 @@ require_once __DIR__ . '/../includes/header.php';
                         });
                         html += '</ul>';
                     }
-                    setSearchTestResult(html, false);
+                    const isErr = !data.success;
+                    setSearchTestResult(html, isErr);
+                    if (!res.ok) {
+                        throw new Error(data.error || 'Échec du test de recherche');
+                    }
                 } catch (err) {
                     console.error(err);
                     setSearchTestResult(esc(err.message || 'Erreur'), true);

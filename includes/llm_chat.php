@@ -165,33 +165,401 @@ function mecabuddy_get_search_query_details(): array
 }
 
 /**
- * Une requête web unique (Serper ou DDG).
+ * @return array<string, mixed>
+ */
+function _mecabuddy_empty_search_diag(string $query, string $attempted = 'duckduckgo'): array
+{
+    $env = mecabuddy_get_search_environment();
+
+    return [
+        'query' => $query,
+        'search_provider_attempted' => $attempted,
+        'url' => $attempted === 'serper' ? 'https://google.serper.dev/search' : MECABUDDY_DDG_HTML_URL,
+        'http_status' => 0,
+        'curl_errno' => 0,
+        'curl_error' => '',
+        'body_length' => 0,
+        'body_hint' => '',
+        'dom_available' => $env['dom_available'],
+        'dom_parse_success' => false,
+        'raw_result_count' => 0,
+        'after_blacklist_count' => 0,
+        'after_vehicle_filter_count' => 0,
+        'final_count' => 0,
+        'rejected_samples' => [],
+        'provider_final' => 'none',
+        'error_code' => !($env['curl_available'] ?? false) ? 'curl_unavailable' : null,
+    ];
+}
+
+/**
+ * @param array<int, array{title: string, snippet: string, url: string}> $results
+ * @return array{kept: array<int, array{title: string, snippet: string, url: string}>, rejected: array<int, array{title: string, url: string, reason: string}>}
+ */
+function _mecabuddyFilterWebResultsByVehicleMeta(array $results, ?array $vehicle): array
+{
+    if ($vehicle === null || empty($vehicle['brand'])) {
+        return ['kept' => $results, 'rejected' => []];
+    }
+
+    $brand = mb_strtolower(trim((string) $vehicle['brand']));
+    if ($brand === '') {
+        return ['kept' => $results, 'rejected' => []];
+    }
+
+    $otherBrands = [
+        'peugeot', 'renault', 'citroën', 'citroen', 'volkswagen',
+        'toyota', 'ford', 'bmw', 'mercedes', 'audi', 'opel', 'fiat',
+        'honda', 'nissan', 'hyundai', 'kia', 'dacia', 'seat', 'skoda',
+    ];
+
+    $kept = [];
+    $rejected = [];
+
+    foreach ($results as $r) {
+        if (!is_array($r)) {
+            continue;
+        }
+        $titleLower = mb_strtolower(($r['title'] ?? '') . ' ' . ($r['url'] ?? ''));
+        $reject = false;
+        foreach ($otherBrands as $other) {
+            if ($other === $brand) {
+                continue;
+            }
+            if (str_contains($titleLower, $other) && !str_contains($titleLower, $brand)) {
+                $reject = true;
+                break;
+            }
+        }
+        if ($reject) {
+            if (count($rejected) < 12) {
+                $rejected[] = [
+                    'title' => mb_substr((string) ($r['title'] ?? ''), 0, 80),
+                    'url' => mb_substr((string) ($r['url'] ?? ''), 0, 120),
+                    'reason' => 'vehicle_brand_mismatch',
+                ];
+            }
+            continue;
+        }
+        $kept[] = $r;
+    }
+
+    return ['kept' => array_values($kept), 'rejected' => $rejected];
+}
+
+/**
+ * @return array{items: array<int, array{title: string, snippet: string, url: string}>, diagnostic: array<string, mixed>}
+ */
+function _mecabuddySerperFetch(string $query, string $apiKey): array
+{
+    $diag = [
+        'search_provider_attempted' => 'serper',
+        'url' => 'https://google.serper.dev/search',
+        'http_status' => 0,
+        'curl_errno' => 0,
+        'curl_error' => '',
+        'body_length' => 0,
+        'body_hint' => '',
+        'dom_available' => true,
+        'dom_parse_success' => true,
+        'raw_result_count' => 0,
+        'error_code' => null,
+    ];
+
+    if (!function_exists('curl_init')) {
+        $diag['error_code'] = 'curl_unavailable';
+
+        return ['items' => [], 'diagnostic' => $diag];
+    }
+
+    $items = _searchViaSerper($query, $apiKey);
+    $last = $GLOBALS['_mecabuddy_last_serper_curl'] ?? [];
+    $diag['http_status'] = (int) ($last['http_code'] ?? 0);
+    $diag['curl_error'] = (string) ($last['error'] ?? '');
+    $diag['body_length'] = (int) ($last['body_length'] ?? 0);
+    if ($diag['body_length'] > 0 && mecabuddy_web_search_debug_enabled()) {
+        $diag['body_hint'] = mecabuddy_sanitize_body_hint((string) ($last['body_preview'] ?? ''), 300);
+    }
+    $diag['raw_result_count'] = count($items);
+    if ($items === [] && $diag['http_status'] !== 200) {
+        $diag['error_code'] = 'http_error';
+    } elseif ($items === [] && $diag['http_status'] === 200) {
+        $diag['error_code'] = 'serper_empty_response';
+    }
+
+    return ['items' => $items, 'diagnostic' => $diag];
+}
+
+/**
+ * @return array<int, array{title: string, snippet: string, url: string}>
+ */
+function _mecabuddyDuckDuckGoParseRegex(string $html): array
+{
+    $items = [];
+    if (!preg_match_all(
+        '/<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)<\/a>/is',
+        $html,
+        $matches,
+        PREG_SET_ORDER
+    )) {
+        return [];
+    }
+
+    $seen = [];
+    foreach ($matches as $m) {
+        if (count($items) >= 5) {
+            break;
+        }
+        $rawUrl = html_entity_decode(trim($m[1]), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $title = trim(strip_tags($m[2]));
+        $finalUrl = _mecabuddyResolveDuckDuckGoUrl($rawUrl);
+        if ($finalUrl === '' || !str_starts_with($finalUrl, 'http') || $title === '') {
+            continue;
+        }
+        $host = strtolower((string) (parse_url($finalUrl, PHP_URL_HOST) ?? ''));
+        if ($host === '' || isset($seen[$host])) {
+            continue;
+        }
+        $seen[$host] = true;
+        $items[] = ['title' => $title, 'snippet' => '', 'url' => $finalUrl];
+    }
+
+    return $items;
+}
+
+/**
+ * @return array{items: array<int, array{title: string, snippet: string, url: string}>, diagnostic: array<string, mixed>}
+ */
+function _mecabuddyDuckDuckGoFetch(string $query): array
+{
+    $env = mecabuddy_get_search_environment();
+    $diag = [
+        'search_provider_attempted' => 'duckduckgo',
+        'url' => MECABUDDY_DDG_HTML_URL,
+        'http_status' => 0,
+        'curl_errno' => 0,
+        'curl_error' => '',
+        'body_length' => 0,
+        'body_hint' => '',
+        'dom_available' => $env['dom_available'],
+        'dom_parse_success' => false,
+        'raw_result_count' => 0,
+        'error_code' => null,
+    ];
+
+    if (!function_exists('curl_init')) {
+        $diag['error_code'] = 'curl_unavailable';
+        error_log('[MecaBuddy][DDG] curl extension missing');
+
+        return ['items' => [], 'diagnostic' => $diag];
+    }
+
+    if (!$env['dom_available']) {
+        $diag['error_code'] = 'php_dom_extension_missing';
+        error_log('[MecaBuddy][DDG] DOMDocument/DOMXPath unavailable');
+
+        return ['items' => [], 'diagnostic' => $diag];
+    }
+
+    $ch = curl_init();
+    if ($ch === false) {
+        $diag['error_code'] = 'curl_init_failed';
+
+        return ['items' => [], 'diagnostic' => $diag];
+    }
+
+    $isLocal = defined('APP_DEBUG') && APP_DEBUG;
+    curl_setopt_array($ch, [
+        CURLOPT_URL => MECABUDDY_DDG_HTML_URL,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query([
+            'q' => $query,
+            'kl' => 'fr-fr',
+            'ia' => 'web',
+        ]),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/x-www-form-urlencoded',
+            'User-Agent: ' . MECABUDDY_DDG_USER_AGENT,
+            'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language: fr-FR,fr;q=0.9,en;q=0.8',
+        ],
+        CURLOPT_TIMEOUT => 12,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_SSL_VERIFYPEER => !$isLocal,
+        CURLOPT_SSL_VERIFYHOST => $isLocal ? 0 : 2,
+    ]);
+
+    $body = curl_exec($ch);
+    $diag['http_status'] = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $diag['curl_errno'] = curl_errno($ch);
+    $diag['curl_error'] = curl_error($ch);
+    curl_close($ch);
+
+    if ($body === false) {
+        $diag['error_code'] = 'curl_error';
+        error_log('[MecaBuddy][DDG] curl error: ' . $diag['curl_error']);
+
+        return ['items' => [], 'diagnostic' => $diag];
+    }
+
+    $html = (string) $body;
+    $diag['body_length'] = strlen($html);
+    if (mecabuddy_web_search_debug_enabled()) {
+        $diag['body_hint'] = mecabuddy_sanitize_body_hint($html, 300);
+    }
+
+    if ($diag['http_status'] < 200 || $diag['http_status'] >= 300) {
+        $diag['error_code'] = 'http_error';
+        error_log('[MecaBuddy][DDG] HTTP ' . $diag['http_status']);
+
+        return ['items' => [], 'diagnostic' => $diag];
+    }
+
+    $block = mecabuddy_detect_ddg_block_page($html);
+    if ($block !== null) {
+        $diag['error_code'] = 'ddg_blocked_or_captcha';
+        $diag['body_hint'] = mb_substr($block . ' — ' . ($diag['body_hint'] ?? ''), 0, 300);
+        error_log('[MecaBuddy][DDG] ' . $block);
+
+        return ['items' => [], 'diagnostic' => $diag];
+    }
+
+    $items = [];
+    try {
+        libxml_use_internal_errors(true);
+        $dom = new DOMDocument();
+        $dom->loadHTML('<?xml encoding="UTF-8">' . $html);
+        libxml_clear_errors();
+        $xpath = new DOMXPath($dom);
+
+        $nodes = $xpath->query(
+            '//div[contains(@class,"result") '
+            . 'and not(contains(@class,"result--ad")) '
+            . 'and not(contains(@class,"result--news--item")) '
+            . 'and contains(@class,"web-result")]'
+        );
+        if ($nodes === false || $nodes->length === 0) {
+            $nodes = $xpath->query(
+                '//div[@id="links"]//div[contains(@class,"result") and not(contains(@class,"result--ad"))]'
+            );
+        }
+
+        if ($nodes !== false && $nodes->length > 0) {
+            $diag['dom_parse_success'] = true;
+            $seen = [];
+            foreach ($nodes as $node) {
+                if (count($items) >= 5) {
+                    break;
+                }
+                $linkNodes = $xpath->query(
+                    './/a[@class="result__a" or contains(@class,"result__a")]',
+                    $node
+                );
+                if ($linkNodes === false || $linkNodes->length === 0) {
+                    continue;
+                }
+                $link = $linkNodes->item(0);
+                if (!$link instanceof DOMElement) {
+                    continue;
+                }
+                $title = trim($link->textContent);
+                $rawUrl = trim($link->getAttribute('href'));
+                $finalUrl = _mecabuddyResolveDuckDuckGoUrl($rawUrl);
+                if ($finalUrl === '' || !str_starts_with($finalUrl, 'http') || $title === '') {
+                    continue;
+                }
+                $urlKey = strtolower((string) (parse_url($finalUrl, PHP_URL_HOST) ?? $finalUrl));
+                if (isset($seen[$urlKey])) {
+                    continue;
+                }
+                $seen[$urlKey] = true;
+                $snippetNodes = $xpath->query(
+                    './/a[contains(@class,"result__snippet")]'
+                    . ' | .//div[contains(@class,"result__snippet")]'
+                    . ' | .//span[contains(@class,"result__snippet")]',
+                    $node
+                );
+                $snippet = ($snippetNodes !== false && $snippetNodes->length > 0)
+                    ? trim($snippetNodes->item(0)->textContent)
+                    : '';
+                $items[] = ['title' => $title, 'snippet' => $snippet, 'url' => $finalUrl];
+            }
+        }
+    } catch (Throwable $e) {
+        $diag['dom_parse_success'] = false;
+        error_log('[MecaBuddy][DDG] DOM parse exception: ' . $e->getMessage());
+    }
+
+    if ($items === []) {
+        $regexItems = _mecabuddyDuckDuckGoParseRegex($html);
+        if ($regexItems !== []) {
+            $items = $regexItems;
+            $diag['dom_parse_success'] = true;
+        } else {
+            $diag['error_code'] = $diag['error_code'] ?? 'ddg_unparseable';
+        }
+    }
+
+    $diag['raw_result_count'] = count($items);
+
+    return ['items' => $items, 'diagnostic' => $diag];
+}
+
+/**
+ * Une requête web : Serper puis DDG, avec diagnostic optionnel.
  *
+ * @return array{results: array<int, array{title: string, snippet: string, url: string}>, diagnostic: array<string, mixed>}
+ */
+function _mecabuddyWebSearchOnceDetailed(string $query, ?array $vehicle = null): array
+{
+    $settings = getEffectiveSettings();
+    $key = trim((string) ($settings['serper_api_key'] ?? ''));
+    $diag = _mecabuddy_empty_search_diag($query, $key !== '' ? 'serper' : 'duckduckgo');
+    $raw = [];
+
+    if ($key !== '') {
+        $serper = _mecabuddySerperFetch($query, $key);
+        $diag = array_merge($diag, $serper['diagnostic']);
+        $diag['query'] = $query;
+        if ($serper['items'] !== []) {
+            $raw = $serper['items'];
+            $diag['search_provider_attempted'] = 'serper';
+        } else {
+            error_log('[MecaBuddy] Serper a échoué, fallback DuckDuckGo');
+            $ddg = _mecabuddyDuckDuckGoFetch($query);
+            $diag = array_merge($diag, $ddg['diagnostic']);
+            $diag['query'] = $query;
+            $diag['serper_fallback'] = true;
+            $raw = $ddg['items'];
+        }
+    } else {
+        $ddg = _mecabuddyDuckDuckGoFetch($query);
+        $diag = array_merge($diag, $ddg['diagnostic']);
+        $diag['query'] = $query;
+        $raw = $ddg['items'];
+    }
+
+    $vehicleMeta = _mecabuddyFilterWebResultsByVehicleMeta($raw, $vehicle);
+    $diag['after_vehicle_filter_count'] = count($vehicleMeta['kept']);
+    $blackMeta = applyBlacklistWithMeta($vehicleMeta['kept']);
+    $diag['after_blacklist_count'] = count($blackMeta['kept']);
+    $diag['raw_result_count'] = count($raw);
+
+    $rejected = array_merge($vehicleMeta['rejected'], $blackMeta['rejected']);
+    $diag['rejected_samples'] = array_slice($rejected, 0, 3);
+    $diag['final_count'] = count($blackMeta['kept']);
+    $diag['provider_final'] = $blackMeta['kept'] !== [] ? ($diag['search_provider_attempted'] ?? 'duckduckgo') : 'none';
+
+    return ['results' => $blackMeta['kept'], 'diagnostic' => $diag];
+}
+
+/**
  * @return array<int, array{title: string, snippet: string, url: string}>
  */
 function _mecabuddyWebSearchOnce(string $query, ?array $vehicle = null): array
 {
-    if (!function_exists('curl_init')) {
-        return [];
-    }
-
-    $settings = getEffectiveSettings();
-    $key = trim((string) ($settings['serper_api_key'] ?? ''));
-
-    if ($key !== '') {
-        $raw = _searchViaSerper($query, $key);
-        if ($raw !== []) {
-            return _mecabuddyFilterWebResultsByVehicle($raw, $vehicle);
-        }
-        error_log('[MecaBuddy] Serper a échoué, fallback DuckDuckGo');
-    }
-
-    $raw = _searchViaDuckDuckGo($query);
-    if ($raw !== []) {
-        return _mecabuddyFilterWebResultsByVehicle($raw, $vehicle);
-    }
-
-    return [];
+    return _mecabuddyWebSearchOnceDetailed($query, $vehicle)['results'];
 }
 
 /**
@@ -238,6 +606,8 @@ function searchWebForContext(string $query, ?array $vehicle = null): array
     $settings = getEffectiveSettings();
     $provider = !empty($settings['serper_api_key']) ? 'serper' : 'duckduckgo';
 
+    $debugSearch = mecabuddy_web_search_debug_enabled();
+
     foreach ($queries as $q) {
         if (count($searchResults) >= 3) {
             break;
@@ -246,25 +616,43 @@ function searchWebForContext(string $query, ?array $vehicle = null): array
         $before = count($searchResults);
         $queriesRun[] = $q;
 
-        $raw = _mecabuddyWebSearchOnce($q, $vehicle);
-        $cleaned = applyBlacklist($raw);
+        $once = _mecabuddyWebSearchOnceDetailed($q, $vehicle);
+        $cleaned = $once['results'];
+        $diag = $once['diagnostic'];
 
         foreach ($cleaned as $r) {
             $host = parse_url((string) ($r['url'] ?? ''), PHP_URL_HOST) ?? '';
             $path = parse_url((string) ($r['url'] ?? ''), PHP_URL_PATH) ?? '';
             $key = $host . $path;
             if ($key === '' || isset($seen[$key])) {
+                if ($debugSearch && isset($seen[$key])) {
+                    $samples = $diag['rejected_samples'] ?? [];
+                    if (count($samples) < 3) {
+                        $samples[] = [
+                            'title' => mb_substr((string) ($r['title'] ?? ''), 0, 80),
+                            'url' => mb_substr((string) ($r['url'] ?? ''), 0, 120),
+                            'reason' => 'duplicate',
+                        ];
+                        $diag['rejected_samples'] = $samples;
+                    }
+                }
                 continue;
             }
             $seen[$key] = true;
             $searchResults[] = $r;
         }
 
-        $queryDetails[] = [
+        $added = count($searchResults) - $before;
+        $entry = [
             'query' => $q,
-            'added' => count($searchResults) - $before,
+            'added' => $added,
             'total' => count($searchResults),
         ];
+        if ($debugSearch) {
+            $entry = array_merge($entry, $diag);
+            $entry['final_count'] = $added;
+        }
+        $queryDetails[] = $entry;
     }
 
     $GLOBALS['_mecabuddy_queries_run'] = $queriesRun;
@@ -278,6 +666,97 @@ function searchWebForContext(string $query, ?array $vehicle = null): array
     }
 
     return $searchResults;
+}
+
+/**
+ * Sonde recherche web (API dev / diagnostic) — ne journalise jamais de clé API.
+ *
+ * @return array<string, mixed>
+ */
+function mecabuddy_probe_web_search(string $query, ?array $vehicle = null): array
+{
+    $env = mecabuddy_get_search_environment();
+    $settings = getEffectiveSettings();
+    $serperConfigured = trim((string) ($settings['serper_api_key'] ?? '')) !== '';
+    $attempted = $serperConfigured ? 'serper' : 'duckduckgo';
+
+    $once = _mecabuddyWebSearchOnceDetailed($query, $vehicle);
+    $results = $once['results'];
+    $diag = $once['diagnostic'];
+    $finalCount = count($results);
+
+    $debug = [
+        'curl_available' => $env['curl_available'],
+        'dom_available' => $env['dom_available'],
+        'serper_configured' => $env['serper_configured'],
+        'search_provider_attempted' => $diag['search_provider_attempted'] ?? $attempted,
+        'url' => $diag['url'] ?? ($attempted === 'serper'
+            ? 'https://google.serper.dev/search'
+            : MECABUDDY_DDG_HTML_URL),
+        'http_status' => (int) ($diag['http_status'] ?? 0),
+        'curl_errno' => (int) ($diag['curl_errno'] ?? 0),
+        'curl_error' => (string) ($diag['curl_error'] ?? ''),
+        'body_length' => (int) ($diag['body_length'] ?? 0),
+        'dom_parse_success' => (bool) ($diag['dom_parse_success'] ?? false),
+        'raw_result_count' => (int) ($diag['raw_result_count'] ?? 0),
+        'after_blacklist_count' => (int) ($diag['after_blacklist_count'] ?? 0),
+        'after_vehicle_filter_count' => (int) ($diag['after_vehicle_filter_count'] ?? 0),
+        'final_count' => $finalCount,
+        'provider_final' => (string) ($diag['provider_final'] ?? ($finalCount > 0 ? $attempted : 'none')),
+        'rejected_samples' => $diag['rejected_samples'] ?? [],
+        'error_code' => $diag['error_code'] ?? null,
+        'ssl_mode' => (defined('APP_DEBUG') && APP_DEBUG) ? 'disabled (dev)' : 'enabled (prod)',
+    ];
+
+    if (!$success && !empty($diag['body_hint'])) {
+        $debug['body_hint'] = mb_substr((string) $diag['body_hint'], 0, 300);
+    }
+
+    $warnings = [];
+    if (!$env['curl_available']) {
+        $warnings[] = 'Extension PHP curl requise pour la recherche web.';
+    }
+    if (!$env['dom_available'] && !$serperConfigured) {
+        $warnings[] = 'L’extension PHP dom est requise pour DuckDuckGo HTML. Activez-la chez l’hébergeur ou configurez Serper.';
+    }
+    if (!$serperConfigured) {
+        $warnings[] = 'Sans clé Serper, DuckDuckGo HTML est utilisé (fragile sur hébergement mutualisé). Serper est recommandé en production.';
+    }
+    if ($finalCount === 0 && ($diag['error_code'] ?? '') === 'ddg_blocked_or_captcha') {
+        $warnings[] = 'DuckDuckGo HTML semble bloqué, non parsable ou indisponible sur cet hébergement. Configurez une clé Serper pour des sources fiables.';
+    }
+
+    $provider = (string) ($diag['provider_final'] ?? ($finalCount > 0 ? $attempted : 'none'));
+    if ($finalCount > 0) {
+        _mecabuddySearchProviderState($provider);
+    }
+
+    $success = $finalCount > 0;
+    $error = null;
+    if (!$success) {
+        if (!$env['curl_available']) {
+            $error = 'curl_unavailable';
+        } elseif (!$env['dom_available'] && !$serperConfigured) {
+            $error = 'php_dom_extension_missing';
+        } elseif (($diag['error_code'] ?? '') === 'ddg_blocked_or_captcha') {
+            $error = 'duckduckgo_unreachable_or_unparseable';
+        } elseif ($attempted === 'serper' && $finalCount === 0) {
+            $error = (string) ($diag['error_code'] ?? 'serper_empty_or_failed');
+        } else {
+            $error = (string) ($diag['error_code'] ?? 'duckduckgo_unreachable_or_unparseable');
+        }
+    }
+
+    return [
+        'success' => $success,
+        'provider' => $success ? $provider : 'none',
+        'query' => $query,
+        'count' => $finalCount,
+        'debug' => $debug,
+        'warnings' => $warnings,
+        'results' => array_slice($results, 0, 5),
+        'error' => $error,
+    ];
 }
 
 /**
@@ -308,6 +787,13 @@ function _searchViaSerper(string $query, string $apiKey): array
         CURLOPT_TIMEOUT => 5,
         CURLOPT_FOLLOWLOCATION => true,
     ]);
+
+    $GLOBALS['_mecabuddy_last_serper_curl'] = [
+        'http_code' => $result['http_code'],
+        'error' => $result['error'],
+        'body_length' => strlen($result['body']),
+        'body_preview' => mb_substr($result['body'], 0, 500),
+    ];
 
     if (!$result['ok']) {
         return $out;
@@ -350,137 +836,7 @@ function _searchViaSerper(string $query, string $apiKey): array
  */
 function _searchViaDuckDuckGo(string $query): array
 {
-    try {
-        if (!function_exists('curl_init') || !class_exists('DOMDocument')) {
-            return [];
-        }
-
-        $result = _mecabuddyCurl('https://html.duckduckgo.com/html/', [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => http_build_query([
-                'q' => $query,
-                'kl' => 'fr-fr',
-                'ia' => 'web',
-            ]),
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/x-www-form-urlencoded',
-                'User-Agent: Mozilla/5.0 (compatible; MecaBuddy/1.0)',
-                'Accept: text/html,application/xhtml+xml',
-                'Accept-Language: fr-FR,fr;q=0.9',
-            ],
-            CURLOPT_TIMEOUT => 8,
-            CURLOPT_FOLLOWLOCATION => true,
-        ]);
-
-        if (!$result['ok']) {
-            error_log('[MecaBuddy][DDG] curl error: ' . $result['error']
-                . ' HTTP: ' . $result['http_code']);
-            return [];
-        }
-
-        $html = $result['body'];
-        if ($html === '') {
-            return [];
-        }
-
-        libxml_use_internal_errors(true);
-        $dom = new DOMDocument();
-        $dom->loadHTML('<?xml encoding="UTF-8">' . $html);
-        libxml_clear_errors();
-
-        $xpath = new DOMXPath($dom);
-        $items = [];
-
-        $nodes = $xpath->query(
-            '//div[contains(@class,"result") '
-            . 'and not(contains(@class,"result--ad")) '
-            . 'and not(contains(@class,"result--news--item")) '
-            . 'and contains(@class,"web-result")]'
-        );
-
-        if ($nodes === false || $nodes->length === 0) {
-            $nodes = $xpath->query(
-                '//div[@id="links"]//div[contains(@class,"result") '
-                . 'and not(contains(@class,"result--ad"))]'
-            );
-        }
-
-        if ($nodes === false || $nodes->length === 0) {
-            return [];
-        }
-
-        $seen = [];
-
-        foreach ($nodes as $node) {
-            if (count($items) >= 5) {
-                break;
-            }
-
-            $linkNodes = $xpath->query(
-                './/a[@class="result__a" or contains(@class,"result__a")]',
-                $node
-            );
-            if ($linkNodes === false || $linkNodes->length === 0) {
-                continue;
-            }
-
-            $link = $linkNodes->item(0);
-            if (!$link instanceof DOMElement) {
-                continue;
-            }
-
-            $title = trim($link->textContent);
-            $rawUrl = trim($link->getAttribute('href'));
-
-            $finalUrl = $rawUrl;
-            if (str_contains($rawUrl, 'uddg=')) {
-                $queryString = parse_url($rawUrl, PHP_URL_QUERY);
-                parse_str(is_string($queryString) ? $queryString : '', $params);
-                $finalUrl = urldecode((string) ($params['uddg'] ?? $rawUrl));
-            } elseif (str_contains($rawUrl, 'y.js')) {
-                $queryString = parse_url($rawUrl, PHP_URL_QUERY);
-                parse_str(is_string($queryString) ? $queryString : '', $params);
-                if (!empty($params['u3'])) {
-                    continue;
-                }
-                continue;
-            }
-
-            if (!str_starts_with($finalUrl, 'http')) {
-                continue;
-            }
-
-            $urlKey = strtolower((string) (parse_url($finalUrl, PHP_URL_HOST) ?? $finalUrl));
-            if (isset($seen[$urlKey])) {
-                continue;
-            }
-            $seen[$urlKey] = true;
-
-            $snippetNodes = $xpath->query(
-                './/a[contains(@class,"result__snippet")]'
-                . ' | .//div[contains(@class,"result__snippet")]'
-                . ' | .//span[contains(@class,"result__snippet")]',
-                $node
-            );
-            $snippet = ($snippetNodes !== false && $snippetNodes->length > 0)
-                ? trim($snippetNodes->item(0)->textContent)
-                : '';
-
-            if ($title === '' || $finalUrl === '') {
-                continue;
-            }
-
-            $items[] = [
-                'title' => $title,
-                'snippet' => $snippet,
-                'url' => $finalUrl,
-            ];
-        }
-
-        return $items;
-    } catch (Throwable $e) {
-        return [];
-    }
+    return _mecabuddyDuckDuckGoFetch($query)['items'];
 }
 
 function _mecabuddyResolveDuckDuckGoUrl(string $href): string

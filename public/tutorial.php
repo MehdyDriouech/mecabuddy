@@ -215,12 +215,156 @@ function setupFormListener() {
 // ============================================
 let tutorialStreamActive = false;
 let tutorialStreamDone = false;
+let tutorialLoadingPhase = 'idle';
+let tutorialFunRotationActive = false;
+let tutorialFunJokeIndex = 0;
+let tutorialFunJokesShuffled = null;
+let tutorialFunModelLabel = 'Le LLM';
 
-function clearLlmJokeTimer() {
+const TUTORIAL_FUN_MESSAGES = [
+    ['⚙️ Génération du tutoriel...', '{model} s\'y colle'],
+    ['🔧 Il cherche la clé de 13...', "C'est toujours la dernière qu'on trouve."],
+    ['🛢️ Il vérifie le niveau d\'huile...', 'Analogique. Respect.'],
+    ['📐 Il mesure deux fois...', "Pour couper une fois. C'est dans le manuel."],
+    ['🪛 Il déroule son tapis de sol...', 'Faut pas abîmer la moquette du garage.'],
+    ['🧲 Il cherche la vis tombée...', 'Quelque part sous le moteur. Évidemment.'],
+    ['☕ Il se fait un café...', 'Non. Il travaille. Mais il y pense.'],
+    ['📦 Il commande la pièce sur internet...', 'Livraison estimée : avant la fin du tuto.'],
+    ['🧴 Il met ses gants...', 'EPI obligatoires. Même pour les IA.'],
+    ['💡 Il relit le manuel constructeur...', 'Page 247, note de bas de page, astérisque 3.'],
+    ['🔩 Il serre au couple...', 'Couple de serrage : au feeling. Comme un pro.'],
+    ['🎵 Il siffle en travaillant...', "C'est bon signe. Ça veut dire que ça avance."],
+    ['🕵️ Il inspecte la pièce...', 'Avec la lampe frontale de travers sur la tête.'],
+    ['📸 Il prend une photo avant démontage..', "Spoiler : il la retrouvera plus au remontage."],
+    ['🗑️ Il trie les chiffons...', 'Celui du bas est propre. Normalement.'],
+    ['⏱️ Il chronomètre...', "Le devis disait 2h. On est à 4h. C'est normal."],
+    ['🧰 Il vide sa caisse à outils...', 'Pour trouver le truc qui était devant.'],
+    ['🪜 Il cherche un escabeau...', "Pour voir en haut du moteur. Ou juste pour s'asseoir."],
+    ['🤔 Il consulte un collègue...', 'Qui consulte un autre collègue. Forums quoi.'],
+    ['📏 Il vérifie le jeu aux soupapes...', "Au micromètre. Parce que à l'œil c'est risqué."],
+    ['🧪 Il sent l\'huile...', 'Diagnostic olfactif. Technique ancestrale.'],
+    ['🔦 Il cherche la fuite...', 'Elle est là. Non. Là. En fait là.'],
+    ['🛞 Il vérifie la pression...', "Sauf que le manomètre est dans l'autre garage."],
+    ['💬 Il marmonne des trucs...', 'En langue technique. Intraduisible.'],
+    ['📋 Il fait l\'inventaire des pièces...', 'Il en manque une. Évidemment.'],
+    ['🪤 Il pose un joint torique...', 'Premier essai : il roule sous le frigo.'],
+    ['🧑‍🔧 Il appelle le fournisseur...', 'En attente. Temps estimé : 17 minutes.'],
+    ['🌡️ Il attend que ça refroidisse...', 'Pendant ce temps, il boit son café froid.'],
+    ['📖 Il cherche le couple de serrage...', 'Manuel papier. Page arrachée. Classique.'],
+    ['🔋 Il teste la batterie...', "12.4V. C'est bon. Enfin... ça dépend."],
+    ['🚿 Il se lave les mains...', 'Sixième passage. Il reste quand même du cambouis.'],
+    ['🎯 Il vise le bouchon...', "Il rate le bac. L'huile est partout. Bientôt."],
+    ['🧩 Il remonte de mémoire...', "Il reste deux pièces. Il décide que c'est en trop."],
+    ['🗺️ Il consulte un schéma électrique...', "C'est un schéma. Ou une œuvre d'art moderne."],
+    ['🪝 Il suspend le moteur...', 'Avec une sangle qui date de 1987. Solide.'],
+    ['🎲 Il tente sa chance...', 'La vis rentre. Elle ressort. Il recommence.'],
+    ['🧸 Il retrouve un boulon perdu...', 'Celui de la dernière révision. Mystère résolu.'],
+    ['📡 Il cherche le signal OBD...', 'Valise branchée. Code P0420. Encore.'],
+    ['🌀 Il décoince une vis grippée...', 'Dégrippant, chalumeau, prière. Dans cet ordre.'],
+    ['🏁 Dernière ligne droite...', 'Il rebranche la batterie. Espoir.'],
+];
+
+function tutorialLoadingDebug(msg, data) {
+    if (!window.DebugPanel) {
+        return;
+    }
+    DebugPanel.info(msg, data !== undefined ? data : null);
+}
+
+function clearAllTutorialLoadingTimers(reason) {
     if (window._llmJokeTimer) {
         clearInterval(window._llmJokeTimer);
         window._llmJokeTimer = null;
+        tutorialLoadingDebug('Rotation messages fun arrêtée', { reason, interval_id: null });
     }
+    tutorialFunRotationActive = false;
+    if (window._llmJokeDelayTimer) {
+        clearTimeout(window._llmJokeDelayTimer);
+        window._llmJokeDelayTimer = null;
+    }
+    if (window._llmJokeFallbackTimer) {
+        clearTimeout(window._llmJokeFallbackTimer);
+        window._llmJokeFallbackTimer = null;
+    }
+}
+
+function clearLlmJokeTimer() {
+    clearAllTutorialLoadingTimers('legacy_clear');
+}
+
+function pickFunIntervalMs() {
+    return 4000 + Math.floor(Math.random() * 2001);
+}
+
+function displayFunMessage() {
+    const msgEl = document.getElementById('loading-message');
+    const subEl = document.getElementById('loading-submessage');
+    if (!msgEl || !subEl || !tutorialFunJokesShuffled) {
+        return;
+    }
+    const [msg, subTpl] = tutorialFunJokesShuffled[tutorialFunJokeIndex % tutorialFunJokesShuffled.length];
+    const sub = String(subTpl).replace(/\{model\}/g, tutorialFunModelLabel);
+    msgEl.textContent = msg;
+    subEl.textContent = sub;
+    tutorialLoadingDebug('Message fun affiché', { index: tutorialFunJokeIndex, message: msg });
+    tutorialFunJokeIndex += 1;
+}
+
+function startFunMessageRotation(modelLabel, reason) {
+    if (tutorialFunRotationActive) {
+        tutorialLoadingDebug('Rotation messages fun déjà active', { reason });
+        return;
+    }
+    const msgEl = document.getElementById('loading-message');
+    const subEl = document.getElementById('loading-submessage');
+    if (!msgEl || !subEl) {
+        return;
+    }
+
+    tutorialFunModelLabel = modelLabel || 'Le LLM';
+    tutorialFunJokesShuffled = TUTORIAL_FUN_MESSAGES.slice().sort(() => Math.random() - 0.5);
+    tutorialFunJokeIndex = 0;
+    tutorialFunRotationActive = true;
+
+    displayFunMessage();
+    const intervalMs = pickFunIntervalMs();
+    window._llmJokeTimer = setInterval(displayFunMessage, intervalMs);
+    tutorialLoadingDebug('Rotation messages fun démarrée', { reason, interval_ms: intervalMs, interval_id: 'active' });
+}
+
+function scheduleFunRotationAfterSearchDone(data) {
+    if (window._llmJokeDelayTimer) {
+        clearTimeout(window._llmJokeDelayTimer);
+    }
+    window._llmJokeDelayTimer = setTimeout(() => {
+        window._llmJokeDelayTimer = null;
+        if (tutorialStreamDone || !tutorialStreamActive) {
+            return;
+        }
+        if (tutorialLoadingPhase === 'saving' || tutorialLoadingPhase === 'done') {
+            return;
+        }
+        if (!tutorialFunRotationActive) {
+            startFunMessageRotation(data?.model, 'after_search_done');
+        }
+    }, 2000);
+}
+
+function scheduleFunRotationFallback(delayMs) {
+    if (window._llmJokeFallbackTimer) {
+        clearTimeout(window._llmJokeFallbackTimer);
+    }
+    window._llmJokeFallbackTimer = setTimeout(() => {
+        window._llmJokeFallbackTimer = null;
+        if (tutorialStreamDone || !tutorialStreamActive || tutorialFunRotationActive) {
+            return;
+        }
+        const waitPhases = ['vehicle', 'search', 'search_done', 'llm'];
+        if (waitPhases.includes(tutorialLoadingPhase)) {
+            tutorialLoadingDebug('Rotation fun (fallback temporisé)', { phase: tutorialLoadingPhase, delay_ms: delayMs });
+            startFunMessageRotation(tutorialFunModelLabel, 'timeout_fallback');
+        }
+    }, delayMs);
 }
 
 function updateLoadingUI(phase, data) {
@@ -230,92 +374,72 @@ function updateLoadingUI(phase, data) {
         return;
     }
 
+    const prevPhase = tutorialLoadingPhase;
+    tutorialLoadingPhase = phase;
+    tutorialLoadingDebug('Transition overlay UI', { from: prevPhase, to: phase });
+
     if (phase === 'llm') {
-        clearLlmJokeTimer();
-        const modelLabel = data?.model || 'Le LLM';
-        const jokes = [
-            ['⚙️ Génération du tutoriel...', `${modelLabel} s'y colle`],
-            ['🔧 Il cherche la clé de 13...', "C'est toujours la dernière qu'on trouve."],
-            ['🛢️ Il vérifie le niveau d\'huile...', 'Analogique. Respect.'],
-            ['📐 Il mesure deux fois...', "Pour couper une fois. C'est dans le manuel."],
-            ['🪛 Il déroule son tapis de sol...', 'Faut pas abîmer la moquette du garage.'],
-            ['🧲 Il cherche la vis tombée...', 'Quelque part sous le moteur. Évidemment.'],
-            ['☕ Il se fait un café...', 'Non. Il travaille. Mais il y pense.'],
-            ['📦 Il commande la pièce sur internet...', 'Livraison estimée : avant la fin du tuto.'],
-            ['🧴 Il met ses gants...', 'EPI obligatoires. Même pour les IA.'],
-            ['💡 Il relit le manuel constructeur...', 'Page 247, note de bas de page, astérisque 3.'],
-            ['🔩 Il serre au couple...', 'Couple de serrage : au feeling. Comme un pro.'],
-            ['🎵 Il siffle en travaillant...', "C'est bon signe. Ça veut dire que ça avance."],
-            ['🕵️ Il inspecte la pièce...', 'Avec la lampe frontale de travers sur la tête.'],
-            ['📸 Il prend une photo avant démontage..', "Spoiler : il la retrouvera plus au remontage."],
-            ['🗑️ Il trie les chiffons...', 'Celui du bas est propre. Normalement.'],
-            ['⏱️ Il chronomètre...', "Le devis disait 2h. On est à 4h. C'est normal."],
-            ['🧰 Il vide sa caisse à outils...', 'Pour trouver le truc qui était devant.'],
-            ['🪜 Il cherche un escabeau...', "Pour voir en haut du moteur. Ou juste pour s'asseoir."],
-            ['🤔 Il consulte un collègue...', 'Qui consulte un autre collègue. Forums quoi.'],
-            ['📏 Il vérifie le jeu aux soupapes...', "Au micromètre. Parce que à l'œil c'est risqué."],
-            ['🧪 Il sent l\'huile...', 'Diagnostic olfactif. Technique ancestrale.'],
-            ['🔦 Il cherche la fuite...', 'Elle est là. Non. Là. En fait là.'],
-            ['🛞 Il vérifie la pression...', "Sauf que le manomètre est dans l'autre garage."],
-            ['💬 Il marmonne des trucs...', 'En langue technique. Intraduisible.'],
-            ['📋 Il fait l\'inventaire des pièces...', 'Il en manque une. Évidemment.'],
-            ['🪤 Il pose un joint torique...', 'Premier essai : il roule sous le frigo.'],
-            ['🧑‍🔧 Il appelle le fournisseur...', 'En attente. Temps estimé : 17 minutes.'],
-            ['🌡️ Il attend que ça refroidisse...', 'Pendant ce temps, il boit son café froid.'],
-            ['📖 Il cherche le couple de serrage...', 'Manuel papier. Page arrachée. Classique.'],
-            ['🔋 Il teste la batterie...', "12.4V. C'est bon. Enfin... ça dépend."],
-            ['🚿 Il se lave les mains...', 'Sixième passage. Il reste quand même du cambouis.'],
-            ['🎯 Il vise le bouchon...', "Il rate le bac. L'huile est partout. Bientôt."],
-            ['🧩 Il remonte de mémoire...', "Il reste deux pièces. Il décide que c'est en trop."],
-            ['🗺️ Il consulte un schéma électrique...', "C'est un schéma. Ou une œuvre d'art moderne."],
-            ['🪝 Il suspend le moteur...', 'Avec une sangle qui date de 1987. Solide.'],
-            ['🎲 Il tente sa chance...', 'La vis rentre. Elle ressort. Il recommence.'],
-            ['🧸 Il retrouve un boulon perdu...', 'Celui de la dernière révision. Mystère résolu.'],
-            ['📡 Il cherche le signal OBD...', 'Valise branchée. Code P0420. Encore.'],
-            ['🌀 Il décoince une vis grippée...', 'Dégrippant, chalumeau, prière. Dans cet ordre.'],
-            ['🏁 Dernière ligne droite...', 'Il rebranche la batterie. Espoir.'],
-        ].sort(() => Math.random() - 0.5);
-
-        let jokeIndex = 0;
-        const rotateLlmMessage = () => {
-            const [msg, sub] = jokes[jokeIndex % jokes.length];
-            msgEl.textContent = msg;
-            subEl.textContent = sub;
-            jokeIndex++;
-        };
-
-        rotateLlmMessage();
-        window._llmJokeTimer = setInterval(rotateLlmMessage, 5000);
+        if (window._llmJokeDelayTimer) {
+            clearTimeout(window._llmJokeDelayTimer);
+            window._llmJokeDelayTimer = null;
+        }
+        if (data?.model) {
+            tutorialFunModelLabel = data.model;
+        }
+        startFunMessageRotation(data?.model, 'phase_llm');
         return;
     }
 
-    clearLlmJokeTimer();
+    if (phase === 'saving') {
+        clearAllTutorialLoadingTimers('phase_saving');
+        msgEl.textContent = '💾 Finalisation du tutoriel...';
+        subEl.textContent = '';
+        return;
+    }
+
+    if (phase === 'search_done') {
+        if (window._llmJokeTimer) {
+            clearInterval(window._llmJokeTimer);
+            window._llmJokeTimer = null;
+            tutorialFunRotationActive = false;
+        }
+        if (data?.failsafe) {
+            msgEl.textContent = '📚 Aucune source fiable, mode sécurisé...';
+            subEl.textContent = 'Vérifiez les valeurs critiques dans votre manuel constructeur.';
+        } else {
+            msgEl.textContent = '📚 Sources analysées...';
+            const titles = (data?.sources || []).map((s) => s.title).filter(Boolean);
+            subEl.textContent = titles.length
+                ? titles.slice(0, 3).join(' · ')
+                : `${data?.sources_count || 0} source(s) retenue(s)`;
+        }
+        scheduleFunRotationAfterSearchDone(data);
+        return;
+    }
+
+    if (tutorialFunRotationActive && window._llmJokeTimer) {
+        clearInterval(window._llmJokeTimer);
+        window._llmJokeTimer = null;
+        tutorialFunRotationActive = false;
+        tutorialLoadingDebug('Rotation messages fun arrêtée', { reason: 'phase_' + phase });
+    }
 
     const isMoto = data?.category === 'moto';
     const messages = {
         vehicle: [
             isMoto ? '🏍️ Identification du véhicule...' : '🚗 Identification du véhicule...',
-            '',
+            data?.vehicle ? String(data.vehicle) : '',
         ],
         search: [
-            '🔍 Recherche de documentation...',
-            data?.vehicle ? `Je cherche des infos spécifiques sur votre ${data.vehicle}` : '',
+            '🔎 Recherche de documentation fiable...',
+            data?.vehicle ? `Documentation pour votre ${data.vehicle}` : '',
         ],
-        search_done: [
-            data?.failsafe
-                ? '⚠️ Aucune source fiable — mode mémoire LLM'
-                : `📖 ${data?.sources_count || 0} source(s) trouvée(s)`,
-            data?.failsafe
-                ? 'Vérifiez les valeurs critiques dans votre manuel constructeur.'
-                : (data?.sources?.map((s) => s.title).filter(Boolean).join(' · ') || ''),
-        ],
-        saving: ['💾 Finalisation...', ''],
         load: ['📖 Chargement du tutoriel...', ''],
     };
 
     const [msg, sub] = messages[phase] || ['Chargement...', ''];
     msgEl.textContent = msg;
-    subEl.textContent = sub;
+    subEl.textContent = sub || '';
 }
 
 function generateTutorial(actionType) {
@@ -327,10 +451,14 @@ function generateTutorialWithSSE(actionType) {
         return;
     }
 
+    clearAllTutorialLoadingTimers('new_generation');
     tutorialStreamActive = true;
     tutorialStreamDone = false;
+    tutorialLoadingPhase = 'vehicle';
     showLoading(true);
-    updateLoadingUI('vehicle', null);
+    tutorialLoadingDebug('Overlay génération affiché', { action: actionType });
+    updateLoadingUI('vehicle', { category: null });
+    scheduleFunRotationFallback(12000);
 
     const params = new URLSearchParams({ action_type: actionType });
     const es = new EventSource(`${API_BASE}/tutorial_stream.php?${params}`);
@@ -340,21 +468,26 @@ function generateTutorialWithSSE(actionType) {
         DebugPanel.info('Génération tutoriel', { action: actionType });
     }
 
-    const finish = () => {
-        clearLlmJokeTimer();
+    const finish = (reason) => {
+        clearAllTutorialLoadingTimers(reason || 'finish');
         tutorialStreamDone = true;
         tutorialStreamActive = false;
+        tutorialLoadingPhase = 'done';
         es.close();
         showLoading(false);
+        tutorialLoadingDebug('Overlay génération masqué', { reason: reason || 'finish' });
     };
 
     es.addEventListener('status', (e) => {
         try {
             const data = JSON.parse(e.data);
+            tutorialLoadingDebug('SSE status reçu', { phase: data.phase, message: data.message });
             if (window.DebugPanel) {
                 DebugPanel.injectSSE('status', data);
             }
-            updateLoadingUI(data.phase, data);
+            if (data.phase) {
+                updateLoadingUI(data.phase, data);
+            }
         } catch (err) {
             console.warn('SSE status parse:', err);
         }
@@ -366,7 +499,7 @@ function generateTutorialWithSSE(actionType) {
             if (window.DebugPanel) {
                 DebugPanel.injectSSE('done', data);
             }
-            finish();
+            finish('done');
             if (data.tutorial) {
                 displayTutorial(
                     data.tutorial,
@@ -379,7 +512,7 @@ function generateTutorialWithSSE(actionType) {
                 showToast('Réponse tutoriel incomplète', 'error');
             }
         } catch (err) {
-            finish();
+            finish('done_parse_error');
             console.error('SSE done parse:', err);
             showToast('❌ Erreur lors de la génération', 'error');
         }
@@ -394,7 +527,7 @@ function generateTutorialWithSSE(actionType) {
             if (window.DebugPanel) {
                 DebugPanel.error('Erreur SSE serveur');
             }
-            finish();
+            finish('sse_error_empty');
             showToast('❌ ' + message, 'error');
             return;
         }
@@ -411,20 +544,20 @@ function generateTutorialWithSSE(actionType) {
                 message = data.message || 'Quota journalier tutoriel atteint.';
                 tutorialStreamDone = true;
                 showToast('⚠️ ' + message, 'warning', 6000);
-                finish();
+                finish('quota_exceeded');
                 return;
             }
             if (data.error === 'auth_required') {
                 message = 'Connexion démo requise.';
                 tutorialStreamDone = true;
-                finish();
+                finish('auth_required');
                 showToast(message, 'warning', 5000);
                 return;
             }
             if (data.error === 'byok_provider_invalid') {
                 message = data.message || 'Clé personnelle invalide ou non validée.';
                 tutorialStreamDone = true;
-                finish();
+                finish('byok_provider_invalid');
                 showToast('⚠️ ' + message, 'warning', 8000);
                 return;
             }
@@ -434,7 +567,7 @@ function generateTutorialWithSSE(actionType) {
         } catch (err) {
             console.warn('SSE error parse:', err);
         }
-        finish();
+        finish('error_event');
         showToast('❌ ' + message, 'error');
     });
 
@@ -454,6 +587,7 @@ function generateTutorialWithSSE(actionType) {
 
 /** Fallback synchrone si SSE indisponible */
 async function generateTutorialFallback(actionType) {
+    clearAllTutorialLoadingTimers('fallback_start');
     showLoading(true);
     try {
         const response = await fetch(`${API_BASE}/tutorial_api.php?action=generate`, {
@@ -474,6 +608,7 @@ async function generateTutorialFallback(actionType) {
         console.error('Erreur génération:', error);
         showToast('❌ Erreur lors de la génération', 'error');
     } finally {
+        clearAllTutorialLoadingTimers('fallback_end');
         showLoading(false);
     }
 }
