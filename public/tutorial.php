@@ -561,6 +561,13 @@ function generateTutorialWithSSE(actionType) {
                 showToast('⚠️ ' + message, 'warning', 8000);
                 return;
             }
+            if (data.error === 'llm_provider_error' || data.error === 'empty_assistant' || data.error === 'no_llm_provider') {
+                message = data.message || 'Le fournisseur IA a rencontré une erreur.';
+                tutorialStreamDone = true;
+                finish('llm_provider_error');
+                showToast('⚠️ ' + message, 'warning', 8000);
+                return;
+            }
             if (data.message) {
                 message = data.message;
             }

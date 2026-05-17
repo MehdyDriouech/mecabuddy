@@ -362,15 +362,18 @@ function handleAskMock(): void {
         $llmResult = callLlmChat($chatHistory, $message, $provider, $llmVehicleContext);
         if (!($llmResult['success'] ?? false)) {
             error_log('diagnostic_api LLM (mock): ' . ($llmResult['error'] ?? 'unknown'));
-            $llmResult = null;
-            $result = BuddyBrain::generateResponse($message, $vehicle, $historyRows);
-        } else {
-            $result = [
-                'response' => (string) ($llmResult['reply'] ?? ''),
-                'detected_topic' => null,
-                'confidence' => null,
-            ];
+            if (!defined('LLM_CHAT_LOADED')) {
+                require_once __DIR__ . '/../includes/llm_chat.php';
+            }
+            $errPayload = mecabuddy_build_llm_provider_error_payload($llmResult, $provider);
+            sendResponse($errPayload, mecabuddy_llm_failure_http_status($llmResult));
         }
+
+        $result = [
+            'response' => (string) ($llmResult['reply'] ?? ''),
+            'detected_topic' => null,
+            'confidence' => null,
+        ];
     }
     
     // Vérifie les éléments dangereux
@@ -555,15 +558,15 @@ function handleAsk(PDO $db): void {
         $llmResult = callLlmChat($chatHistory, $message, $provider, $llmVehicleContext);
         if (!($llmResult['success'] ?? false)) {
             error_log('diagnostic_api LLM: ' . ($llmResult['error'] ?? 'unknown'));
-            $llmResult = null;
-            $result = BuddyBrain::generateResponse($message, $vehicle, $historyRows);
-        } else {
-            $result = [
-                'response' => (string) ($llmResult['reply'] ?? ''),
-                'detected_topic' => null,
-                'confidence' => null,
-            ];
+            $errPayload = mecabuddy_build_llm_provider_error_payload($llmResult, $provider);
+            sendResponse($errPayload, mecabuddy_llm_failure_http_status($llmResult));
         }
+
+        $result = [
+            'response' => (string) ($llmResult['reply'] ?? ''),
+            'detected_topic' => null,
+            'confidence' => null,
+        ];
     }
     
     $safetyWarning = null;

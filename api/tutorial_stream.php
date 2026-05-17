@@ -57,14 +57,19 @@ if ($actionType === '') {
 require_once __DIR__ . '/../includes/byok.php';
 
 $provider = getEffectiveLlmProvider();
+
+if ($provider === null) {
+    sse_event('error', [
+        'success' => false,
+        'error' => 'no_llm_provider',
+        'message' => 'Aucun provider LLM actif',
+    ]);
+    exit;
+}
+
 byok_assert_provider_usable_sse($provider);
 
 demo_auth_consume_quota_start_sse('tutorial');
-
-if ($provider === null) {
-    sse_event('error', ['message' => 'Aucun provider LLM actif']);
-    exit;
-}
 
 $vehContext = getCurrentVehicleContext();
 $sessionVehicleId = isset($_SESSION['vehicle_id']) ? (int) $_SESSION['vehicle_id'] : null;
@@ -184,33 +189,46 @@ $llmRes = callLlmForTutorial(
 );
 
 if (($llmRes['success'] ?? false) !== true) {
+    if (!defined('LLM_CHAT_LOADED')) {
+        require_once __DIR__ . '/../includes/llm_chat.php';
+    }
+
     $errorCode = (string) ($llmRes['error'] ?? 'Erreur LLM');
     if ($errorCode === 'json_structure_invalid') {
         sse_event('error', [
-            'message' => 'Structure JSON incomplète',
+            'success' => false,
+            'error' => 'json_structure_invalid',
+            'message' => 'Structure JSON incomplète pour le tutoriel.',
             'keys_present' => $llmRes['keys_present'] ?? [],
             'raw_preview' => mb_substr((string) ($llmRes['raw'] ?? ''), 0, 300),
         ]);
     } elseif ($errorCode === 'json_parse_failed') {
         $raw = (string) ($llmRes['raw'] ?? '');
         sse_event('error', [
-            'message' => 'json_parse_failed',
+            'success' => false,
+            'error' => 'json_parse_failed',
+            'message' => strlen($raw) === 0
+                ? 'Réponse LLM vide — modèle peut-être surchargé.'
+                : 'Réponse LLM invalide (JSON attendu).',
             'raw_preview' => mb_substr($raw, 0, 500),
-            'hint' => strlen($raw) === 0
-                ? 'Réponse LLM vide — modèle peut-être surchargé'
-                : 'JSON invalide — voir raw_preview',
         ]);
     } elseif ($errorCode === 'empty_assistant') {
-        sse_event('error', [
-            'message' => 'empty_assistant',
-            'raw_preview' => mb_substr((string) ($llmRes['raw'] ?? ''), 0, 500),
-            'http_code' => $llmRes['http'] ?? null,
-            'keys_found' => $llmRes['keys'] ?? [],
-            'hint' => 'Réponse Ollama reçue mais contenu vide — '
-                . 'vérifier le chemin d\'extraction message.content',
-        ]);
+        $payload = mecabuddy_build_llm_provider_error_payload($llmRes, $provider);
+        $payload['error'] = 'empty_assistant';
+        $payload['message'] = (string) ($llmRes['message'] ?? $payload['message']);
+        if (defined('APP_DEBUG') && APP_DEBUG) {
+            $payload['raw_preview'] = mb_substr((string) ($llmRes['raw'] ?? ''), 0, 500);
+            $payload['http_code'] = $llmRes['http'] ?? null;
+        }
+        sse_event('error', $payload);
+    } elseif (mecabuddy_is_llm_provider_transport_failure($llmRes)) {
+        sse_event('error', mecabuddy_build_llm_provider_error_payload($llmRes, $provider));
     } else {
-        sse_event('error', ['message' => $errorCode]);
+        sse_event('error', [
+            'success' => false,
+            'error' => $errorCode,
+            'message' => (string) ($llmRes['message'] ?? 'Erreur lors de la génération du tutoriel.'),
+        ]);
     }
     exit;
 }

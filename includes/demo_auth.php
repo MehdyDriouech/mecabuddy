@@ -183,8 +183,14 @@ function logoutDemoUser(): void
 function getDemoUsageStatus(int $userId): array
 {
     $user = demo_auth_fetch_user_by_id($userId);
-    $tutorialLimit = (int) ($user['tutorial_daily_quota'] ?? 15);
-    $buddyLimit = (int) ($user['buddy_daily_quota'] ?? 15);
+    if ($user === null) {
+        $sessionUser = getCurrentDemoUser();
+        if ($sessionUser !== null && (int) ($sessionUser['id'] ?? 0) === $userId) {
+            $user = $sessionUser;
+        }
+    }
+    $tutorialLimit = $user !== null ? (int) ($user['tutorial_daily_quota'] ?? 15) : 15;
+    $buddyLimit = $user !== null ? (int) ($user['buddy_daily_quota'] ?? 15) : 15;
     $today = demo_auth_today_date();
 
     $tutorialUsed = demo_auth_get_used_count($userId, $today, 'tutorial');
@@ -204,6 +210,15 @@ function getDemoUsageStatus(int $userId): array
         'reset_at' => demo_auth_reset_at(),
     ];
 }
+
+/*
+ * Quotas journaliers (demo_usage_daily)
+ * -------------------------------------
+ * - Pas de cron pour le reset : une ligne par (user_id, usage_date, usage_type).
+ * - usage_date = jour civil Europe/Paris (demo_auth_today_date).
+ * - Un cron optionnel peut purger les vieilles lignes ; il n'est pas requis.
+ * - Une tentative lancée consomme 1 quota même si le LLM échoue ensuite.
+ */
 
 /**
  * Vérifie le quota sans incrémenter.
@@ -252,40 +267,287 @@ function assertDemoQuotaAvailable(string $usageType): array
 
 /**
  * Incrémente le compteur du jour (une unité par appel).
+ * Préférer demo_auth_consume_quota_atomic() pour les garde-fous API/SSE (atomique sous SQLite).
  *
  * @return array{success: bool, usage: array<string, mixed>}
  */
 function incrementDemoUsage(string $usageType): array
 {
-    if (!isDemoAuthEnabled()) {
+    $result = demo_auth_consume_quota_atomic($usageType);
+    if (($result['skipped'] ?? false) === true) {
         return ['success' => true, 'usage' => []];
+    }
+    if (($result['consumed'] ?? false) === true) {
+        return ['success' => true, 'usage' => $result['usage'] ?? []];
+    }
+
+    return ['success' => false, 'usage' => $result['usage'] ?? []];
+}
+
+/**
+ * Consomme atomiquement une unité de quota (check + increment dans une transaction SQLite).
+ *
+ * @return array{
+ *   consumed: bool,
+ *   exceeded?: bool,
+ *   skipped?: bool,
+ *   auth_required?: bool,
+ *   error?: bool,
+ *   usage_type: string,
+ *   quota?: array{limit: int, used: int, remaining: int, reset_at: string},
+ *   usage?: array<string, mixed>,
+ *   message?: string
+ * }
+ */
+function demo_auth_consume_quota_atomic(string $usageType): array
+{
+    if (!in_array($usageType, ['tutorial', 'buddy'], true)) {
+        throw new InvalidArgumentException('usageType invalide');
+    }
+
+    if (!isDemoAuthEnabled()) {
+        return [
+            'consumed' => false,
+            'skipped' => true,
+            'usage_type' => $usageType,
+        ];
     }
 
     $user = getCurrentDemoUser();
     if ($user === null) {
-        return ['success' => false, 'usage' => []];
+        return [
+            'consumed' => false,
+            'auth_required' => true,
+            'usage_type' => $usageType,
+            'quota' => [
+                'limit' => 0,
+                'used' => 0,
+                'remaining' => 0,
+                'reset_at' => demo_auth_reset_at(),
+            ],
+        ];
+    }
+
+    if (!function_exists('demo_auth_quota_bypass_active')) {
+        require_once __DIR__ . '/byok.php';
+    }
+    if (demo_auth_quota_bypass_active()) {
+        return [
+            'consumed' => false,
+            'skipped' => true,
+            'usage_type' => $usageType,
+        ];
     }
 
     $userId = (int) $user['id'];
     $today = demo_auth_today_date();
     $pdo = demo_auth_pdo();
 
-    if ($pdo !== null) {
-        $stmt = $pdo->prepare(
-            "INSERT INTO demo_usage_daily (user_id, usage_date, usage_type, used_count, updated_at)
-             VALUES (?, ?, ?, 1, datetime('now'))
-             ON CONFLICT(user_id, usage_date, usage_type)
-             DO UPDATE SET used_count = used_count + 1, updated_at = datetime('now')"
-        );
-        $stmt->execute([$userId, $today, $usageType]);
-    } else {
-        demo_auth_session_increment($userId, $today, $usageType);
+    if ($pdo === null) {
+        return demo_auth_consume_quota_atomic_session($userId, $user, $usageType, $today);
     }
 
+    $inTransaction = false;
+
+    try {
+        $pdo->exec('BEGIN IMMEDIATE');
+        $inTransaction = true;
+
+        $insert = $pdo->prepare(
+            "INSERT INTO demo_usage_daily (user_id, usage_date, usage_type, used_count, updated_at)
+             VALUES (?, ?, ?, 0, datetime('now'))
+             ON CONFLICT(user_id, usage_date, usage_type) DO NOTHING"
+        );
+        $insert->execute([$userId, $today, $usageType]);
+
+        $sel = $pdo->prepare(
+            'SELECT used_count FROM demo_usage_daily
+             WHERE user_id = ? AND usage_date = ? AND usage_type = ?'
+        );
+        $sel->execute([$userId, $today, $usageType]);
+        $usedCount = (int) $sel->fetchColumn();
+
+        if ($usageType === 'tutorial') {
+            $limitStmt = $pdo->prepare(
+                'SELECT tutorial_daily_quota FROM demo_users WHERE id = ? AND is_active = 1'
+            );
+        } else {
+            $limitStmt = $pdo->prepare(
+                'SELECT buddy_daily_quota FROM demo_users WHERE id = ? AND is_active = 1'
+            );
+        }
+        $limitStmt->execute([$userId]);
+        $limitVal = $limitStmt->fetchColumn();
+        $limit = $limitVal !== false ? (int) $limitVal : 15;
+        if ($limit < 1) {
+            $limit = 15;
+        }
+
+        if ($usedCount >= $limit) {
+            $pdo->exec('ROLLBACK');
+            $inTransaction = false;
+            $resetAt = demo_auth_reset_at();
+
+            return [
+                'consumed' => false,
+                'exceeded' => true,
+                'usage_type' => $usageType,
+                'quota' => [
+                    'limit' => $limit,
+                    'used' => $usedCount,
+                    'remaining' => 0,
+                    'reset_at' => $resetAt,
+                ],
+                'usage' => getDemoUsageStatus($userId),
+            ];
+        }
+
+        $upd = $pdo->prepare(
+            "UPDATE demo_usage_daily
+             SET used_count = used_count + 1, updated_at = datetime('now')
+             WHERE user_id = ? AND usage_date = ? AND usage_type = ?"
+        );
+        $upd->execute([$userId, $today, $usageType]);
+
+        $pdo->exec('COMMIT');
+        $inTransaction = false;
+
+        $status = getDemoUsageStatus($userId);
+        $bucket = $usageType === 'tutorial' ? $status['tutorial'] : $status['buddy'];
+
+        return [
+            'consumed' => true,
+            'usage_type' => $usageType,
+            'quota' => [
+                'limit' => (int) $bucket['limit'],
+                'used' => (int) $bucket['used'],
+                'remaining' => (int) $bucket['remaining'],
+                'reset_at' => $status['reset_at'],
+            ],
+            'usage' => $status,
+        ];
+    } catch (Throwable $e) {
+        if ($inTransaction) {
+            try {
+                $pdo->exec('ROLLBACK');
+            } catch (Throwable $rollbackErr) {
+                error_log('demo_auth quota rollback: ' . $rollbackErr->getMessage());
+            }
+        }
+        error_log('demo_auth_consume_quota_atomic: ' . $e->getMessage());
+
+        return [
+            'consumed' => false,
+            'error' => true,
+            'usage_type' => $usageType,
+            'message' => defined('APP_DEBUG') && APP_DEBUG
+                ? $e->getMessage()
+                : 'Impossible de mettre à jour le quota.',
+        ];
+    }
+}
+
+/**
+ * Repli session si PDO demo indisponible (non partagé entre navigateurs).
+ *
+ * @param array<string, mixed> $user
+ * @return array<string, mixed>
+ */
+function demo_auth_consume_quota_atomic_session(
+    int $userId,
+    array $user,
+    string $usageType,
+    string $today
+): array {
+    $limit = $usageType === 'tutorial'
+        ? (int) ($user['tutorial_daily_quota'] ?? 15)
+        : (int) ($user['buddy_daily_quota'] ?? 15);
+    if ($limit < 1) {
+        $limit = 15;
+    }
+
+    $usedCount = demo_auth_session_get_used($userId, $today, $usageType);
+    if ($usedCount >= $limit) {
+        return [
+            'consumed' => false,
+            'exceeded' => true,
+            'usage_type' => $usageType,
+            'quota' => [
+                'limit' => $limit,
+                'used' => $usedCount,
+                'remaining' => 0,
+                'reset_at' => demo_auth_reset_at(),
+            ],
+            'usage' => getDemoUsageStatus($userId),
+        ];
+    }
+
+    demo_auth_session_increment($userId, $today, $usageType);
+    $status = getDemoUsageStatus($userId);
+    $bucket = $usageType === 'tutorial' ? $status['tutorial'] : $status['buddy'];
+
     return [
-        'success' => true,
-        'usage' => getDemoUsageStatus($userId),
+        'consumed' => true,
+        'usage_type' => $usageType,
+        'quota' => [
+            'limit' => (int) $bucket['limit'],
+            'used' => (int) $bucket['used'],
+            'remaining' => (int) $bucket['remaining'],
+            'reset_at' => $status['reset_at'],
+        ],
+        'usage' => $status,
     ];
+}
+
+/**
+ * @param array<string, mixed> $result
+ */
+function demo_auth_handle_quota_atomic_failure(string $usageType, array $result, string $channel): void
+{
+    if (($result['exceeded'] ?? false) === true) {
+        $quota = $result['quota'] ?? [];
+        if ($channel === 'sse') {
+            sendSseQuotaExceeded($usageType, $quota);
+        } else {
+            sendQuotaExceededResponse($usageType, $quota);
+        }
+    }
+
+    if (($result['auth_required'] ?? false) === true) {
+        if ($channel === 'sse') {
+            sse_event('error', [
+                'success' => false,
+                'error' => 'auth_required',
+                'message' => 'Connexion démo requise.',
+            ]);
+            exit;
+        }
+        requireDemoApiLogin();
+    }
+
+    if (($result['error'] ?? false) === true) {
+        $message = (string) ($result['message'] ?? 'Erreur quota');
+        if ($channel === 'sse') {
+            if (!function_exists('sse_event')) {
+                header('Content-Type: text/event-stream; charset=utf-8');
+            }
+            sse_event('error', [
+                'success' => false,
+                'error' => 'quota_storage_error',
+                'message' => $message,
+            ]);
+            exit;
+        }
+
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'success' => false,
+            'error' => 'quota_storage_error',
+            'message' => $message,
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 }
 
 /**
@@ -299,19 +561,12 @@ function demo_auth_consume_quota_start(string $usageType): void
 
     requireDemoApiLogin();
 
-    if (!function_exists('demo_auth_quota_bypass_active')) {
-        require_once __DIR__ . '/byok.php';
-    }
-    if (demo_auth_quota_bypass_active()) {
+    $result = demo_auth_consume_quota_atomic($usageType);
+    if (($result['skipped'] ?? false) === true || ($result['consumed'] ?? false) === true) {
         return;
     }
 
-    $check = assertDemoQuotaAvailable($usageType);
-    if (!$check['allowed']) {
-        sendQuotaExceededResponse($usageType, $check['quota']);
-    }
-
-    incrementDemoUsage($usageType);
+    demo_auth_handle_quota_atomic_failure($usageType, $result, 'json');
 }
 
 /**
@@ -332,19 +587,12 @@ function demo_auth_consume_quota_start_sse(string $usageType): void
         exit;
     }
 
-    if (!function_exists('demo_auth_quota_bypass_active')) {
-        require_once __DIR__ . '/byok.php';
-    }
-    if (demo_auth_quota_bypass_active()) {
+    $result = demo_auth_consume_quota_atomic($usageType);
+    if (($result['skipped'] ?? false) === true || ($result['consumed'] ?? false) === true) {
         return;
     }
 
-    $check = assertDemoQuotaAvailable($usageType);
-    if (!$check['allowed']) {
-        sendSseQuotaExceeded($usageType, $check['quota']);
-    }
-
-    incrementDemoUsage($usageType);
+    demo_auth_handle_quota_atomic_failure($usageType, $result, 'sse');
 }
 
 /**
@@ -490,9 +738,9 @@ function demo_auth_seed_users(PDO $pdo): void
     }
 
     $accounts = [
-        ['demo', 'demo', 15, 15],
-        ['demo-demo', 'demo-demo', 15, 15],
-        ['demo-fairuse', 'demo-fairuse', 50, 50],
+        ['demo', 'demo', 10, 25],
+        ['demo-demo', 'demo-demo', 10, 25],
+        ['demo-fairuse', 'demo-fairuse', 50, 100],
     ];
 
     $select = $pdo->prepare('SELECT id FROM demo_users WHERE username = ?');

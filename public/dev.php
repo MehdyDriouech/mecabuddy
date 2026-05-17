@@ -151,8 +151,9 @@ require_once __DIR__ . '/../includes/header.php';
     <section class="dev-section dev-section--global" id="demo-instance-section" style="border-top:1px solid var(--border,#333);padding-top:16px;margin-top:0">
         <h2>🔐 Instance démo (auth & quotas)</h2>
         <p class="dev-hint">
-            Connexion obligatoire + quotas journaliers (15 tutoriels / 15 Buddy, compteurs séparés).
-            Comptes : <code>demo</code> / <code>demo</code>, <code>demo-demo</code> / <code>demo-demo</code>, <code>demo-fairuse</code> / <code>demo-fairuse</code>.
+            Connexion obligatoire + quotas journaliers séparés (tutoriel / Buddy).
+            <code>demo-demo</code> : 10 tutos / 25 Buddy par jour —
+            <code>demo-fairuse</code> : 50 tutos / 100 Buddy par jour.
         </p>
         <label class="toggle-label">
             <input type="checkbox" id="toggle-demo-auth">
@@ -350,12 +351,40 @@ require_once __DIR__ . '/../includes/header.php';
         </div>
         <div id="search-test-result" class="dev-status" style="display:none" aria-live="polite"></div>
     </section>
+    <section class="selection-section dev-section">
+        <div class="section-header">
+            <h2>
+                <span class="section-number">4</span>
+                Limites affichées Gemini (provider global)
+            </h2>
+        </div>
+        <p class="dev-hint">
+            Informations Google AI Studio dans le bandeau (pas des compteurs MecaBuddy).
+            Clé <code>provider_limits.gemini</code> dans settings.json.
+        </p>
+        <div class="dev-actions-row" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+            <label class="form-label">Req/min
+                <input type="number" id="gemini-limit-rpm" class="dev-text-input" min="1" max="999" style="width:90px;display:block;margin-top:4px">
+            </label>
+            <label class="form-label">Req/jour
+                <input type="number" id="gemini-limit-rpd" class="dev-text-input" min="1" style="width:90px;display:block;margin-top:4px">
+            </label>
+            <label class="form-label">Tokens entrée/min
+                <input type="number" id="gemini-limit-tpm" class="dev-text-input" min="1" style="width:120px;display:block;margin-top:4px">
+            </label>
+            <label class="dev-switch">
+                <input type="checkbox" id="gemini-limit-display" class="dev-switch-input">
+                <span class="dev-switch-slider" aria-hidden="true"></span>
+                <span class="dev-switch-label">Afficher bandeau</span>
+            </label>
+        </div>
+    </section>
 
     <!-- Section fallback -->
     <section class="selection-section dev-section">
         <div class="section-header">
             <h2>
-                <span class="section-number">4</span>
+                <span class="section-number">5</span>
                 Fallback LLM
             </h2>
         </div>
@@ -529,6 +558,23 @@ require_once __DIR__ . '/../includes/header.php';
                 : 'Token API';
         }
         document.getElementById('llmFallback').checked = !!currentSettings.llm_fallback_enabled;
+        const geminiLimits = (currentSettings.provider_limits && currentSettings.provider_limits.gemini) || {};
+        const rpmEl = document.getElementById('gemini-limit-rpm');
+        const rpdEl = document.getElementById('gemini-limit-rpd');
+        const tpmEl = document.getElementById('gemini-limit-tpm');
+        const displayEl = document.getElementById('gemini-limit-display');
+        if (rpmEl) {
+            rpmEl.value = String(geminiLimits.rpm != null ? geminiLimits.rpm : 5);
+        }
+        if (rpdEl) {
+            rpdEl.value = String(geminiLimits.rpd != null ? geminiLimits.rpd : 20);
+        }
+        if (tpmEl) {
+            tpmEl.value = String(geminiLimits.input_tpm != null ? geminiLimits.input_tpm : 250000);
+        }
+        if (displayEl) {
+            displayEl.checked = geminiLimits.display_enabled !== false;
+        }
         const serperKeyEl = document.getElementById('serper-api-key');
         if (serperKeyEl) {
             serperKeyEl.value = '';
@@ -552,7 +598,27 @@ require_once __DIR__ . '/../includes/header.php';
      * @param {string} [successToastMessage]
      * @returns {Promise<boolean>}
      */
+    function applyGeminiLimitsFromForm() {
+        const rpmEl = document.getElementById('gemini-limit-rpm');
+        const rpdEl = document.getElementById('gemini-limit-rpd');
+        const tpmEl = document.getElementById('gemini-limit-tpm');
+        const displayEl = document.getElementById('gemini-limit-display');
+        if (!rpmEl || !rpdEl || !tpmEl || !displayEl) {
+            return;
+        }
+        if (!currentSettings.provider_limits || typeof currentSettings.provider_limits !== 'object') {
+            currentSettings.provider_limits = {};
+        }
+        currentSettings.provider_limits.gemini = {
+            rpm: Math.max(1, parseInt(rpmEl.value, 10) || 5),
+            rpd: Math.max(1, parseInt(rpdEl.value, 10) || 20),
+            input_tpm: Math.max(1, parseInt(tpmEl.value, 10) || 250000),
+            display_enabled: displayEl.checked
+        };
+    }
+
     async function persist(successToastMessage) {
+        applyGeminiLimitsFromForm();
         showLoading(true);
         try {
             const res = await fetch(API_BASE + '/dev_api.php?action=save_settings', {
@@ -980,6 +1046,17 @@ require_once __DIR__ . '/../includes/header.php';
             persist();
         });
 
+        ['gemini-limit-rpm', 'gemini-limit-rpd', 'gemini-limit-tpm', 'gemini-limit-display'].forEach(function (id) {
+            const el = document.getElementById(id);
+            if (!el) {
+                return;
+            }
+            el.addEventListener('change', function () {
+                applyGeminiLimitsFromForm();
+                persist('Limites Gemini enregistrées');
+            });
+        });
+
         const serperKeyInput = document.getElementById('serper-api-key');
         if (serperKeyInput) {
             serperKeyInput.addEventListener('change', function () {
@@ -1109,9 +1186,20 @@ require_once __DIR__ . '/../includes/header.php';
                         latency_ms: data.latency_ms,
                         response: data.response,
                         error: data.error,
+                        provider_status: data.provider_status ?? null,
+                        user_message: data.user_message ?? null,
                         debug: data.debug || null
                     };
-                    if (pre) pre.textContent = JSON.stringify(block, null, 2);
+                    if (pre) {
+                        let text = JSON.stringify(block, null, 2);
+                        if (data.user_message) {
+                            text = 'Message utilisateur : ' + data.user_message + '\n\n' + text;
+                        }
+                        if (data.debug && data.debug.request_url) {
+                            text += '\n\nURL (sans clé) : ' + data.debug.request_url;
+                        }
+                        pre.textContent = text;
+                    }
                     showToast(data.ok ? 'Connexion LLM OK' : 'Échec du test LLM', data.ok ? 'success' : 'warning');
                 } catch (err) {
                     if (pre) pre.textContent = String(err.message || err);

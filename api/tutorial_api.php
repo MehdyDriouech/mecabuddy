@@ -726,6 +726,13 @@ function handleGenerateTutorialMock(): void {
             error_log('LLM tutorial (mock): normalisation impossible après parse JSON');
         } else {
             error_log('LLM tutorial failed (mock): ' . ($llmRes['error'] ?? 'unknown'));
+            if (!defined('LLM_CHAT_LOADED')) {
+                require_once __DIR__ . '/../includes/llm_chat.php';
+            }
+            if (mecabuddy_is_llm_provider_transport_failure($llmRes)) {
+                $payload = mecabuddy_build_llm_provider_error_payload($llmRes, $provider);
+                sendResponse($payload, mecabuddy_llm_failure_http_status($llmRes));
+            }
         }
     }
     
@@ -950,6 +957,13 @@ function handleGenerateTutorial(PDO $db): void {
             error_log('LLM tutorial: normalisation impossible après parse JSON');
         } else {
             error_log('LLM tutorial failed: ' . ($llmRes['error'] ?? 'unknown'));
+            if (!defined('LLM_CHAT_LOADED')) {
+                require_once __DIR__ . '/../includes/llm_chat.php';
+            }
+            if (mecabuddy_is_llm_provider_transport_failure($llmRes)) {
+                $payload = mecabuddy_build_llm_provider_error_payload($llmRes, $provider);
+                sendResponse($payload, mecabuddy_llm_failure_http_status($llmRes));
+            }
         }
     }
     

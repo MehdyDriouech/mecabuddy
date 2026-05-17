@@ -952,6 +952,221 @@ function _mecabuddyResolveOpenAiCompatibleChatPath(array $provider): string
 }
 
 /**
+ * @param array<string, mixed>|null $provider
+ */
+function mecabuddy_is_gemini_provider(?array $provider): bool
+{
+    if ($provider === null || $provider === []) {
+        return false;
+    }
+
+    $type = strtolower((string) ($provider['type'] ?? ''));
+    if ($type !== 'openai_compatible') {
+        return false;
+    }
+
+    $base = strtolower((string) ($provider['base_url'] ?? ''));
+    if (str_contains($base, 'generativelanguage.googleapis.com')) {
+        return true;
+    }
+
+    foreach (['model', 'id', 'name'] as $key) {
+        $v = strtolower((string) ($provider[$key] ?? ''));
+        if ($v !== '' && str_contains($v, 'gemini')) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Limites affichées pour le provider global Gemini (information Google AI Studio, pas compteur MecaBuddy).
+ *
+ * @return array{rpm: int, rpd: int, input_tpm: int, display_enabled: bool}
+ */
+function mecabuddy_get_gemini_provider_limits(): array
+{
+    $defaults = [
+        'rpm' => 5,
+        'rpd' => 20,
+        'input_tpm' => 250000,
+        'display_enabled' => true,
+    ];
+
+    if (!function_exists('getSettings')) {
+        return $defaults;
+    }
+
+    $limits = getSettings()['provider_limits']['gemini'] ?? null;
+    if (!is_array($limits)) {
+        return $defaults;
+    }
+
+    return [
+        'rpm' => max(1, (int) ($limits['rpm'] ?? $defaults['rpm'])),
+        'rpd' => max(1, (int) ($limits['rpd'] ?? $defaults['rpd'])),
+        'input_tpm' => max(1, (int) ($limits['input_tpm'] ?? $defaults['input_tpm'])),
+        'display_enabled' => ($limits['display_enabled'] ?? true) !== false,
+    ];
+}
+
+/**
+ * Ligne bandeau « Gemini : … » si provider global Gemini actif (pas BYOK).
+ */
+function mecabuddy_gemini_limits_banner_line(?int $demoUserId = null): ?string
+{
+    if (!function_exists('getEffectiveLlmProvider')) {
+        require_once __DIR__ . '/byok.php';
+    }
+
+    $meta = byok_effective_provider_meta($demoUserId);
+    if (($meta['quota_bypass_allowed'] ?? false) === true) {
+        return null;
+    }
+
+    $provider = getEffectiveLlmProvider($demoUserId);
+    if (!mecabuddy_is_gemini_provider($provider)) {
+        return null;
+    }
+
+    $limits = mecabuddy_get_gemini_provider_limits();
+    if (!$limits['display_enabled']) {
+        return null;
+    }
+
+    $tpm = number_format($limits['input_tpm'], 0, ',', ' ');
+
+    return sprintf(
+        'Gemini : %d req/min · %d req/jour · %s tokens entrée/min',
+        $limits['rpm'],
+        $limits['rpd'],
+        $tpm
+    );
+}
+
+/**
+ * Message utilisateur pour échec LLM (sans clé API ni body brut).
+ *
+ * @param array<string, mixed>|string $error
+ * @param array<string, mixed> $provider
+ */
+function mecabuddy_public_llm_error_message(array|string $error, array $provider): string
+{
+    $httpCode = 0;
+    $curlError = '';
+    $body = '';
+    $code = '';
+
+    if (is_array($error)) {
+        $httpCode = (int) ($error['http'] ?? $error['http_code'] ?? $error['provider_status'] ?? 0);
+        $curlError = trim((string) ($error['curl_error'] ?? ''));
+        $body = (string) ($error['body'] ?? '');
+        $code = trim((string) ($error['error'] ?? $error['code'] ?? ''));
+    } else {
+        $code = trim($error);
+        if (preg_match('/^http_(\d{3})$/', $code, $m)) {
+            $httpCode = (int) $m[1];
+        }
+    }
+
+    $isGemini = mecabuddy_is_gemini_provider($provider);
+
+    if ($code === 'empty_assistant' || $code === 'provider_empty_response') {
+        return $isGemini
+            ? 'Gemini a renvoyé une réponse vide. Réessayez ou changez de modèle.'
+            : 'Le fournisseur IA a renvoyé une réponse vide. Réessayez.';
+    }
+
+    if ($curlError !== '') {
+        if (defined('APP_DEBUG') && APP_DEBUG) {
+            return 'Le fournisseur IA ne répond pas assez vite. Réessayez dans quelques instants.'
+                . ' (' . $curlError . ')';
+        }
+
+        return 'Le fournisseur IA ne répond pas assez vite. Réessayez dans quelques instants.';
+    }
+
+    if ($httpCode > 0) {
+        if ($isGemini) {
+            return match ($httpCode) {
+                400 => 'Le fournisseur IA a refusé la requête. Le modèle ou un paramètre semble invalide.',
+                401, 403 => 'La clé API Gemini semble invalide ou non autorisée. Vérifiez la configuration du provider.',
+                429 => 'La limite d’utilisation Gemini est atteinte. Réessayez plus tard ou utilisez votre propre clé API dans Mon compte.',
+                500, 502, 503 => 'Gemini semble temporairement indisponible. Réessayez dans quelques instants.',
+                default => _mecabuddyInterpretLlmHttpError($httpCode, $body, ''),
+            };
+        }
+
+        return _mecabuddyInterpretLlmHttpError($httpCode, $body, '');
+    }
+
+    if ($code !== '' && $code !== 'llm_provider_error') {
+        if (defined('APP_DEBUG') && APP_DEBUG) {
+            return $code;
+        }
+    }
+
+    return 'Le fournisseur IA a rencontré une erreur. Réessayez dans quelques instants.';
+}
+
+/**
+ * @param array<string, mixed> $llmFailure
+ * @param array<string, mixed> $provider
+ * @return array{success: false, error: string, provider: string, provider_status: int, message: string}
+ */
+function mecabuddy_build_llm_provider_error_payload(array $llmFailure, array $provider): array
+{
+    $http = (int) ($llmFailure['http'] ?? $llmFailure['provider_status'] ?? 0);
+    if ($http === 0 && isset($llmFailure['error']) && preg_match('/^http_(\d{3})$/', (string) $llmFailure['error'], $m)) {
+        $http = (int) $m[1];
+    }
+
+    return [
+        'success' => false,
+        'error' => 'llm_provider_error',
+        'provider' => mecabuddy_is_gemini_provider($provider) ? 'gemini' : (string) ($provider['type'] ?? 'llm'),
+        'provider_status' => $http,
+        'message' => mecabuddy_public_llm_error_message(
+            array_merge($llmFailure, ['http' => $http, 'provider_status' => $http]),
+            $provider
+        ),
+    ];
+}
+
+/**
+ * @param array<string, mixed> $llmFailure
+ */
+function mecabuddy_llm_failure_http_status(array $llmFailure): int
+{
+    $http = (int) ($llmFailure['provider_status'] ?? $llmFailure['http'] ?? 0);
+    if ($http >= 400 && $http < 600) {
+        return $http;
+    }
+
+    return 502;
+}
+
+/**
+ * @param array<string, mixed> $llmFailure
+ */
+function mecabuddy_is_llm_provider_transport_failure(array $llmFailure): bool
+{
+    $err = (string) ($llmFailure['error'] ?? '');
+    if ($err === 'llm_provider_error') {
+        return true;
+    }
+    if (isset($llmFailure['provider_status']) && (int) $llmFailure['provider_status'] >= 400) {
+        return true;
+    }
+    if (preg_match('/^http_\d{3}$/', $err)) {
+        return true;
+    }
+
+    return in_array($err, ['curl_unavailable', 'curl_error', 'timeout'], true);
+}
+
+/**
  * Message utilisateur pour erreurs HTTP LLM (sans exposer de secrets).
  */
 function _mecabuddyInterpretLlmHttpError(int $httpCode, string $body, string $curlError = ''): string
@@ -961,7 +1176,7 @@ function _mecabuddyInterpretLlmHttpError(int $httpCode, string $body, string $cu
             return 'Erreur réseau : ' . $curlError;
         }
 
-        return 'Délai dépassé ou erreur réseau. Réessayez.';
+        return 'Le fournisseur IA ne répond pas assez vite. Réessayez dans quelques instants.';
     }
 
     $apiMessage = '';
@@ -978,31 +1193,31 @@ function _mecabuddyInterpretLlmHttpError(int $httpCode, string $body, string $cu
         }
     }
 
+    if (defined('APP_DEBUG') && APP_DEBUG && $apiMessage !== '') {
+        return $apiMessage;
+    }
+
     switch ($httpCode) {
-        case 401:
-            return $apiMessage !== ''
-                ? 'Clé API invalide ou manquante : ' . $apiMessage
-                : 'Clé API invalide ou manquante.';
-        case 403:
-            return $apiMessage !== ''
-                ? 'Clé API non autorisée : ' . $apiMessage
-                : 'Clé API non autorisée.';
-        case 429:
-            return 'Quota ou limite de débit atteint (Google AI Studio / API). Réessayez plus tard.';
         case 400:
-            return $apiMessage !== ''
-                ? $apiMessage
-                : 'Requête invalide (modèle ou paramètre non supporté).';
+            return 'Le fournisseur IA a refusé la requête. Le modèle ou un paramètre semble invalide.';
+        case 401:
+            return 'La clé API semble invalide ou manquante. Vérifiez la configuration du provider.';
+        case 403:
+            return 'La clé API semble non autorisée pour ce projet ou ce modèle.';
+        case 429:
+            return 'La limite d’utilisation du fournisseur IA est atteinte. Réessayez plus tard.';
+        case 500:
+        case 502:
+        case 503:
+            return 'Le fournisseur IA semble temporairement indisponible. Réessayez dans quelques instants.';
         case 404:
-            return $apiMessage !== ''
-                ? 'Endpoint introuvable : ' . $apiMessage
-                : 'Endpoint introuvable (vérifiez base_url et chat_path).';
+            return 'Endpoint introuvable (vérifiez base_url et chat_path).';
         default:
-            if ($apiMessage !== '') {
-                return $apiMessage;
+            if ($httpCode >= 400) {
+                return 'Erreur fournisseur IA (HTTP ' . $httpCode . '). Réessayez.';
             }
 
-            return 'http_' . $httpCode;
+            return 'Erreur de communication avec le fournisseur IA.';
     }
 }
 
@@ -1311,12 +1526,19 @@ function callLlmChat(array $history, string $userMessage, array $provider, ?arra
         ]);
 
         if (!$curlResult['ok']) {
-            $err = _mecabuddyInterpretLlmHttpError(
-                $curlResult['http_code'],
-                $curlResult['body'],
-                $curlResult['error']
-            );
-            return $fail($err);
+            $httpCode = (int) $curlResult['http_code'];
+
+            return array_merge($fail('llm_provider_error'), [
+                'error' => 'llm_provider_error',
+                'http' => $httpCode,
+                'provider_status' => $httpCode,
+                'message' => mecabuddy_public_llm_error_message([
+                    'http' => $httpCode,
+                    'curl_error' => $curlResult['error'],
+                    'body' => $curlResult['body'],
+                    'error' => 'llm_provider_error',
+                ], $provider),
+            ]);
         }
 
         $decoded = json_decode($curlResult['body'], true);
@@ -1338,7 +1560,10 @@ function callLlmChat(array $history, string $userMessage, array $provider, ?arra
         }
 
         if ($content === null || trim($content) === '') {
-            return $fail('empty_assistant');
+            return array_merge($fail('empty_assistant'), [
+                'error' => 'empty_assistant',
+                'message' => mecabuddy_public_llm_error_message('empty_assistant', $provider),
+            ]);
         }
 
         $parsed = extractSourcesFromReply($content);

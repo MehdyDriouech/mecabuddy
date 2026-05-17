@@ -8,6 +8,9 @@
 
 $pageTitle = 'Buddy Mode - MecaBuddy';
 $currentPage = 'diagnostic';
+
+require_once __DIR__ . '/../includes/header.php';
+require_once __DIR__ . '/../config/db.php';
 ?>
 <style>
 .buddy-sources {
@@ -52,8 +55,6 @@ $currentPage = 'diagnostic';
 }
 </style>
 <?php
-require_once __DIR__ . '/../includes/header.php';
-require_once __DIR__ . '/../config/db.php';
 
 // Récupère le véhicule courant si disponible
 $currentVehicle = null;
@@ -404,6 +405,10 @@ async function sendMessage(message) {
         } else if (data.error === 'auth_required') {
             addMessage('🔐 Connexion démo requise pour utiliser Buddy.', 'buddy');
             showToast('Veuillez vous connecter.', 'warning', 5000);
+        } else if (data.error === 'llm_provider_error' || data.error === 'empty_assistant') {
+            const llmMsg = data.message || 'Le fournisseur IA a rencontré une erreur. Réessayez.';
+            addMessage('⚠️ ' + llmMsg, 'buddy');
+            showToast(llmMsg, 'warning', 8000);
         } else {
             if (window.DebugPanel) {
                 DebugPanel.error('Réponse API en échec', data.error || null);

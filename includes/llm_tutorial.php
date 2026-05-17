@@ -684,10 +684,26 @@ PROMPT;
         $curlResult = _mecabuddyCurl($prepared['url'], $curlOptions);
 
         if (!$curlResult['ok']) {
-            $err = $curlResult['error'] !== ''
-                ? $curlResult['error']
-                : 'http_' . $curlResult['http_code'];
-            return ['success' => false, 'error' => $err];
+            $httpCode = (int) $curlResult['http_code'];
+
+            return array_merge(
+                [
+                    'success' => false,
+                    'error' => 'llm_provider_error',
+                    'http' => $httpCode,
+                    'provider_status' => $httpCode,
+                    'curl_error' => $curlResult['error'],
+                    'body' => $curlResult['body'],
+                ],
+                [
+                    'message' => mecabuddy_public_llm_error_message([
+                        'http' => $httpCode,
+                        'curl_error' => $curlResult['error'],
+                        'body' => $curlResult['body'],
+                        'error' => 'llm_provider_error',
+                    ], $provider),
+                ]
+            );
         }
 
         $rawCurlResponse = $curlResult['body'];

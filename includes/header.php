@@ -26,15 +26,21 @@ if (empty($skipDemoAuthGuard) && isDemoAuthEnabled()) {
 }
 
 $demoAuthBar = null;
+$demoUser = null;
 if (isDemoAuthEnabled()) {
-    $demoUser = getCurrentDemoUser();
-    if ($demoUser !== null) {
-        $demoAuthBar = getDemoUsageStatus((int) $demoUser['id']);
-        $demoAuthBar['username'] = (string) $demoUser['username'];
-        if (!function_exists('byok_effective_provider_meta')) {
-            require_once __DIR__ . '/byok.php';
+    try {
+        $demoUser = getCurrentDemoUser();
+        if ($demoUser !== null) {
+            $demoAuthBar = getDemoUsageStatus((int) $demoUser['id']);
+            $demoAuthBar['username'] = (string) $demoUser['username'];
+            if (!function_exists('byok_effective_provider_meta')) {
+                require_once __DIR__ . '/byok.php';
+            }
+            $demoAuthBar['llm_mode'] = byok_effective_provider_meta((int) $demoUser['id']);
         }
-        $demoAuthBar['llm_mode'] = byok_effective_provider_meta((int) $demoUser['id']);
+    } catch (Throwable $e) {
+        error_log('MecaBuddy demo auth bar: ' . $e->getMessage());
+        $demoAuthBar = null;
     }
 }
 ?>
@@ -80,6 +86,19 @@ if (isDemoAuthEnabled()) {
         <span class="demo-auth-llm-mode" title="Mode LLM actif">
             <?= $quotaBypass ? 'Clé personnelle active' : 'Quota démo actif' ?>
         </span>
+        <?php
+        $geminiLimitsLine = null;
+        try {
+            if (!function_exists('mecabuddy_gemini_limits_banner_line')) {
+                require_once __DIR__ . '/llm_chat.php';
+            }
+            $geminiLimitsLine = mecabuddy_gemini_limits_banner_line((int) ($demoUser['id'] ?? 0));
+        } catch (Throwable $e) {
+            error_log('MecaBuddy gemini banner: ' . $e->getMessage());
+        }
+        if ($geminiLimitsLine !== null): ?>
+        <span class="demo-auth-gemini-limits" title="Limites indicatives Google AI Studio (provider global)"><?= htmlspecialchars($geminiLimitsLine) ?></span>
+        <?php endif; ?>
         <a href="<?= htmlspecialchars(PUBLIC_URL . '/account-settings.php') ?>" class="demo-auth-account btn btn-secondary btn-sm">Mon compte</a>
         <button type="button" class="demo-auth-logout btn btn-secondary btn-sm" id="demoAuthLogout">Déconnexion</button>
     </div>

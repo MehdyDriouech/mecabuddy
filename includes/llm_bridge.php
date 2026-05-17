@@ -238,13 +238,24 @@ function llm_bridge_parse_json_object_from_text(string $text): ?array
  */
 function testLlmProviderPrompt(array $provider, string $userMessage = 'Réponds juste OK'): array
 {
-    $fail = static function (string $err, int $latencyMs = 0): array {
-        return [
+    $fail = static function (string $err, int $latencyMs = 0, int $httpCode = 0, string $body = '', string $curlError = '') use ($provider): array {
+        $out = [
             'ok' => false,
             'latency_ms' => $latencyMs,
             'response' => '',
             'error' => $err,
+            'http_code' => $httpCode > 0 ? $httpCode : null,
         ];
+        if (function_exists('mecabuddy_public_llm_error_message')) {
+            $out['user_message'] = mecabuddy_public_llm_error_message([
+                'error' => $err,
+                'http' => $httpCode,
+                'body' => $body,
+                'curl_error' => $curlError,
+            ], $provider);
+        }
+
+        return $out;
     };
 
     if (!function_exists('curl_init')) {
@@ -274,12 +285,10 @@ function testLlmProviderPrompt(array $provider, string $userMessage = 'Réponds 
     $latency = (int) round((microtime(true) - $t0) * 1000);
 
     if (!$res['ok']) {
-        $err = _mecabuddyInterpretLlmHttpError(
-            $res['http_code'],
-            $res['body'],
-            $res['error']
-        );
-        return $fail($err, $latency);
+        $httpCode = (int) $res['http_code'];
+        $err = 'llm_provider_error';
+
+        return $fail($err, $latency, $httpCode, $res['body'], $res['error']);
     }
 
     $decoded = json_decode($res['body'], true);

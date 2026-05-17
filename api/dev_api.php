@@ -200,6 +200,17 @@ function dev_api_normalize_settings(array $in): array
         $out['llm_providers'] = dev_api_sanitize_providers($in['llm_providers']);
     }
 
+    if (isset($in['provider_limits']) && is_array($in['provider_limits'])
+        && isset($in['provider_limits']['gemini']) && is_array($in['provider_limits']['gemini'])) {
+        $g = $in['provider_limits']['gemini'];
+        $out['provider_limits']['gemini'] = [
+            'rpm' => max(1, min(999, (int) ($g['rpm'] ?? $defaults['provider_limits']['gemini']['rpm']))),
+            'rpd' => max(1, min(99999, (int) ($g['rpd'] ?? $defaults['provider_limits']['gemini']['rpd']))),
+            'input_tpm' => max(1, min(999999999, (int) ($g['input_tpm'] ?? $defaults['provider_limits']['gemini']['input_tpm']))),
+            'display_enabled' => ($g['display_enabled'] ?? true) === true,
+        ];
+    }
+
     if ($out['llm_providers'] !== []) {
         $anyActive = false;
         foreach ($out['llm_providers'] as $row) {
@@ -713,6 +724,8 @@ function handle_test_llm(): void
         'latency_ms' => $r['latency_ms'],
         'response' => $r['response'],
         'error' => $r['error'] ?? null,
+        'provider_status' => $r['http_code'] ?? null,
+        'user_message' => $r['user_message'] ?? null,
     ];
     if (defined('APP_DEBUG') && APP_DEBUG) {
         if (!defined('LLM_CHAT_LOADED')) {

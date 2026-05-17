@@ -28,6 +28,14 @@ function getDefaultSettings(): array
         'dev_mode' => false,
         'debug_panel' => false,
         'serper_api_key' => '',
+        'provider_limits' => [
+            'gemini' => [
+                'rpm' => 5,
+                'rpd' => 20,
+                'input_tpm' => 250000,
+                'display_enabled' => true,
+            ],
+        ],
         'llm_providers' => [
             [
                 'id' => 'local_gemma',
