@@ -58,22 +58,29 @@ function migrateSQLiteDemoAuth(PDO $pdo): void
     $stmt = $pdo->query(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='demo_users'"
     );
+    $tableCreated = false;
     if (!$stmt || $stmt->fetchColumn() === false) {
         $migrationFile = dirname(__DIR__) . '/sql/migrate_demo_auth.sql';
         if (is_readable($migrationFile)) {
             $sql = file_get_contents($migrationFile);
             if ($sql !== false && trim($sql) !== '') {
                 $pdo->exec($sql);
+                $tableCreated = true;
             }
         }
     }
 
-    if (function_exists('demo_auth_seed_users')) {
-        demo_auth_seed_users($pdo);
-    } else {
+    if (!function_exists('demo_auth_seed_users')) {
         require_once dirname(__DIR__) . '/includes/demo_auth.php';
+    }
+    // Seed des comptes démo uniquement à la création initiale de la table.
+    // Ne pas rappeler à chaque requête : sinon une suppression admin est annulée au prochain list_users.
+    // Recréation explicite : dev_api.php ?action=rebuild_demo_users
+    if ($tableCreated) {
         demo_auth_seed_users($pdo);
     }
+    migrateSQLiteDemoUserRole($pdo);
+    demo_auth_seed_admin_user($pdo);
 
     if (!function_exists('migrateSQLiteDemoUserSettings')) {
         require_once dirname(__DIR__) . '/includes/demo_user_settings.php';

@@ -10,6 +10,12 @@ require_once __DIR__ . '/../config/settings.php';
 const DEMO_AUTH_SESSION_USER_ID = 'demo_user_id';
 const DEMO_AUTH_SESSION_USERNAME = 'demo_username';
 
+/** Rôles demo_users.role — TEXT, défaut user */
+const DEMO_ROLE_USER = 'user';
+const DEMO_ROLE_ADMIN = 'admin';
+
+const DEMO_ADMIN_SEED_USERNAME = 'moonshine';
+
 /**
  * PDO SQLite pour les tables demo_* (indépendant du mode mock applicatif).
  */
@@ -80,6 +86,7 @@ function getCurrentDemoUser(): ?array
         return $username !== '' ? [
             'id' => $userId,
             'username' => $username,
+            'role' => DEMO_ROLE_USER,
             'tutorial_daily_quota' => 15,
             'buddy_daily_quota' => 15,
             'is_active' => 1,
@@ -87,13 +94,209 @@ function getCurrentDemoUser(): ?array
     }
 
     $stmt = $pdo->prepare(
-        'SELECT id, username, tutorial_daily_quota, buddy_daily_quota, is_active
+        'SELECT id, username, role, tutorial_daily_quota, buddy_daily_quota, is_active
          FROM demo_users WHERE id = ? AND is_active = 1'
     );
     $stmt->execute([$userId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    return $row !== false ? $row : null;
+    return $row !== false ? demo_auth_normalize_user_row($row) : null;
+}
+
+function demo_auth_normalize_role(?string $role): string
+{
+    return $role === DEMO_ROLE_ADMIN ? DEMO_ROLE_ADMIN : DEMO_ROLE_USER;
+}
+
+/**
+ * @param array<string, mixed> $row
+ * @return array<string, mixed>
+ */
+function demo_auth_normalize_user_row(array $row): array
+{
+    $row['role'] = demo_auth_normalize_role(isset($row['role']) ? (string) $row['role'] : null);
+
+    return $row;
+}
+
+function isDemoAdmin(): bool
+{
+    $user = getCurrentDemoUser();
+    if ($user === null) {
+        return false;
+    }
+
+    return demo_auth_normalize_role((string) ($user['role'] ?? '')) === DEMO_ROLE_ADMIN;
+}
+
+/**
+ * Page HTML : 403 atelier verrouillé si non connecté ou non admin.
+ * Appeler avant header.php (avec $skipDemoAuthGuard = true sur la page).
+ */
+function requireDemoAdmin(): void
+{
+    require_once __DIR__ . '/access_denied.php';
+
+    if (!isDemoAuthEnabled()) {
+        renderAccessDeniedPage(['variant' => 'auth_disabled']);
+    }
+
+    $user = getCurrentDemoUser();
+    if ($user === null || !isDemoAdmin()) {
+        $redirect = $_SERVER['REQUEST_URI'] ?? (PUBLIC_URL . '/index.php');
+        renderAccessDeniedPage([
+            'is_logged_in' => $user !== null,
+            'home_url' => PUBLIC_URL . '/index.php',
+            'login_url' => PUBLIC_URL . '/login.php?redirect=' . rawurlencode($redirect),
+        ]);
+    }
+}
+
+/**
+ * API JSON : session + rôle admin (403 générique, sans détail sensible).
+ */
+function requireDemoApiAdmin(): void
+{
+    require_once __DIR__ . '/access_denied.php';
+
+    if (!isDemoAuthEnabled() || getCurrentDemoUser() === null || !isDemoAdmin()) {
+        demo_access_denied_json();
+    }
+}
+
+/**
+ * Migration idempotente : colonne role sur demo_users (SQLite).
+ */
+function migrateSQLiteDemoUserRole(PDO $pdo): void
+{
+    if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite') {
+        return;
+    }
+
+    $stmt = $pdo->query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='demo_users'"
+    );
+    if (!$stmt || $stmt->fetchColumn() === false) {
+        return;
+    }
+
+    $hasRole = false;
+    foreach ($pdo->query('PRAGMA table_info(demo_users)') as $col) {
+        if (($col['name'] ?? '') === 'role') {
+            $hasRole = true;
+            break;
+        }
+    }
+
+    if (!$hasRole) {
+        $pdo->exec(
+            "ALTER TABLE demo_users ADD COLUMN role TEXT NOT NULL DEFAULT '" . DEMO_ROLE_USER . "'"
+        );
+    }
+
+    $pdo->exec(
+        "UPDATE demo_users SET role = '" . DEMO_ROLE_USER . "' WHERE role IS NULL OR TRIM(role) = ''"
+    );
+}
+
+/**
+ * Migration role demo_users (MySQL) si la table existe sur l’instance.
+ */
+function migrateMysqlDemoUserRole(PDO $pdo): void
+{
+    if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql') {
+        return;
+    }
+
+    $stmt = $pdo->query(
+        "SELECT TABLE_NAME FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'demo_users'"
+    );
+    if (!$stmt || $stmt->fetchColumn() === false) {
+        return;
+    }
+
+    $hasRole = false;
+    $cols = $pdo->query('SHOW COLUMNS FROM demo_users');
+    if ($cols !== false) {
+        while ($row = $cols->fetch(PDO::FETCH_ASSOC)) {
+            if (($row['Field'] ?? '') === 'role') {
+                $hasRole = true;
+                break;
+            }
+        }
+    }
+
+    if (!$hasRole) {
+        $pdo->exec(
+            "ALTER TABLE demo_users ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'user'"
+        );
+    }
+
+    $pdo->exec("UPDATE demo_users SET role = 'user' WHERE role IS NULL OR role = ''");
+}
+
+/**
+ * Compte admin POC moonshine — mot de passe hashé uniquement à la création.
+ */
+function demo_auth_seed_admin_user(PDO $pdo): void
+{
+    migrateSQLiteDemoUserRole($pdo);
+    migrateMysqlDemoUserRole($pdo);
+
+    $username = DEMO_ADMIN_SEED_USERNAME;
+    $select = $pdo->prepare('SELECT id, password_hash, role FROM demo_users WHERE username = ?');
+    $select->execute([$username]);
+    $row = $select->fetch(PDO::FETCH_ASSOC);
+
+    if ($row === false) {
+        $password = 'Azerty12345!';
+        $hash = password_hash($password, PASSWORD_DEFAULT);
+        $insert = $pdo->prepare(
+            'INSERT INTO demo_users (username, password_hash, role, tutorial_daily_quota, buddy_daily_quota, is_active, updated_at)
+             VALUES (?, ?, ?, 50, 100, 1, datetime(\'now\'))'
+        );
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'mysql') {
+            $insert = $pdo->prepare(
+                'INSERT INTO demo_users (username, password_hash, role, tutorial_daily_quota, buddy_daily_quota, is_active, updated_at)
+                 VALUES (?, ?, ?, 50, 100, 1, NOW())'
+            );
+        }
+        $insert->execute([$username, $hash, DEMO_ROLE_ADMIN]);
+
+        return;
+    }
+
+    $promote = $pdo->prepare(
+        'UPDATE demo_users SET role = ?, is_active = 1, updated_at = datetime(\'now\') WHERE id = ?'
+    );
+    if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+        $promote = $pdo->prepare(
+            'UPDATE demo_users SET role = ?, is_active = 1, updated_at = NOW() WHERE id = ?'
+        );
+    }
+    $promote->execute([DEMO_ROLE_ADMIN, (int) $row['id']]);
+}
+
+function demo_auth_count_active_admins(?PDO $pdo = null): int
+{
+    $pdo = $pdo ?? demo_auth_pdo();
+    if ($pdo === null) {
+        return isDemoAdmin() ? 1 : 0;
+    }
+
+    migrateSQLiteDemoUserRole($pdo);
+    migrateMysqlDemoUserRole($pdo);
+
+    $stmt = $pdo->query(
+        "SELECT COUNT(*) FROM demo_users WHERE role = '" . DEMO_ROLE_ADMIN . "' AND is_active = 1"
+    );
+    if ($stmt === false) {
+        return 0;
+    }
+
+    return (int) $stmt->fetchColumn();
 }
 
 /**
@@ -672,13 +875,27 @@ function demo_auth_fetch_user_by_id(int $userId): ?array
     }
 
     $stmt = $pdo->prepare(
-        'SELECT id, username, tutorial_daily_quota, buddy_daily_quota, is_active
+        'SELECT id, username, role, tutorial_daily_quota, buddy_daily_quota, is_active
          FROM demo_users WHERE id = ?'
     );
     $stmt->execute([$userId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    return $row !== false ? $row : null;
+    return $row !== false ? demo_auth_normalize_user_row($row) : null;
+}
+
+/**
+ * Journalisation actions admin (sans secrets).
+ */
+function demo_auth_admin_log(string $action, array $context = []): void
+{
+    $user = getCurrentDemoUser();
+    $payload = array_merge([
+        'action' => $action,
+        'admin_id' => $user !== null ? (int) ($user['id'] ?? 0) : 0,
+        'admin_username' => $user !== null ? (string) ($user['username'] ?? '') : '',
+    ], $context);
+    error_log('[MecaBuddy][admin] ' . json_encode($payload, JSON_UNESCAPED_UNICODE));
 }
 
 function demo_auth_get_used_count(int $userId, string $date, string $usageType): int
@@ -783,16 +1000,19 @@ function demo_auth_list_users_with_usage(): array
 
     $today = demo_auth_today_date();
     $rows = $pdo->query(
-        'SELECT id, username, tutorial_daily_quota, buddy_daily_quota, is_active FROM demo_users ORDER BY username'
+        'SELECT id, username, role, tutorial_daily_quota, buddy_daily_quota, is_active
+         FROM demo_users ORDER BY username'
     )->fetchAll(PDO::FETCH_ASSOC);
 
     $out = [];
     foreach ($rows as $row) {
+        $row = demo_auth_normalize_user_row($row);
         $id = (int) $row['id'];
         $usage = getDemoUsageStatus($id);
         $out[] = [
             'id' => $id,
             'username' => (string) $row['username'],
+            'role' => (string) $row['role'],
             'tutorial_daily_quota' => (int) $row['tutorial_daily_quota'],
             'buddy_daily_quota' => (int) $row['buddy_daily_quota'],
             'is_active' => (int) $row['is_active'] === 1,

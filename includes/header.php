@@ -117,6 +117,13 @@ if (isDemoAuthEnabled()) {
                     class="account-menu-item"
                     role="menuitem"
                 >Réglages du compte</a>
+                <?php if (isDemoAdmin()): ?>
+                <a
+                    href="<?= htmlspecialchars(PUBLIC_URL . '/admin.php') ?>"
+                    class="account-menu-item"
+                    role="menuitem"
+                >Administration</a>
+                <?php endif; ?>
                 <button type="button" class="account-menu-item" role="menuitem" data-action="logout">Déconnexion</button>
             </div>
         </div>

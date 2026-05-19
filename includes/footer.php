@@ -15,12 +15,18 @@
                 <a href="<?= PUBLIC_URL ?>/about.php" class="footer-link">À propos</a>
             </p>
         </div>
-    <?php if (defined('APP_DEBUG') && APP_DEBUG): ?>
+    <?php
+    $footerShowAdmin = function_exists('isDemoAdmin') && isDemoAdmin();
+    $footerShowDev = $footerShowAdmin;
+    if ($footerShowAdmin || $footerShowDev):
+    ?>
     <div style="text-align:center;padding:8px 0;font-size:0.75rem;opacity:0.5;">
-        <a href="<?= PUBLIC_URL ?>/dev.php"
-           style="color:inherit;text-decoration:none;">
-            ⚙️ Dev
-        </a>
+        <?php if ($footerShowAdmin): ?>
+        <a href="<?= PUBLIC_URL ?>/admin.php" style="color:inherit;text-decoration:none;margin:0 6px;">🛡️ Admin</a>
+        <?php endif; ?>
+        <?php if ($footerShowDev): ?>
+        <a href="<?= PUBLIC_URL ?>/dev.php" style="color:inherit;text-decoration:none;margin:0 6px;">⚙️ Dev</a>
+        <?php endif; ?>
     </div>
     <?php endif; ?>
     </footer>
@@ -30,7 +36,7 @@
     
     <?php
     $aboutPromptScript = basename($_SERVER['SCRIPT_NAME'] ?? $_SERVER['PHP_SELF'] ?? '');
-    $aboutPromptExcluded = ['about.php', 'login.php', 'dev.php', 'test_api.php', 'account-settings.php', 'db_diag.php'];
+    $aboutPromptExcluded = ['about.php', 'login.php', 'dev.php', 'admin.php', 'test_api.php', 'account-settings.php', 'db_diag.php'];
     $showAboutPrompt = !in_array($aboutPromptScript, $aboutPromptExcluded, true);
     ?>
 

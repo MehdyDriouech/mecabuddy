@@ -7,41 +7,21 @@ require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../includes/search_helpers.php';
 $mbSearchEnv = mecabuddy_get_search_environment();
 
-if (!defined('APP_DEBUG') || !APP_DEBUG) {
-    http_response_code(403);
-    $pageTitle = 'Accès refusé — MecaBuddy';
-    $currentPage = 'dev';
-    $skipDemoAuthGuard = true;
-    require_once __DIR__ . '/../includes/header.php';
-    ?>
-    <div class="page-header">
-        <h1 class="page-title">
-            <span class="title-icon">🔒</span>
-            Administration indisponible
-        </h1>
-        <p class="page-subtitle">
-            Activez <code>APP_DEBUG</code> dans <code>config/config.php</code>
-            pour accéder à cette page d’administration.
-        </p>
-    </div>
-    <div class="card login-card" style="max-width:520px;margin:0 auto 2rem">
-        <p>
-            Cette zone est réservée au mode développeur.
-            Vos quotas et clés personnelles sont sur
-            <a href="<?= htmlspecialchars(PUBLIC_URL . '/account-settings.php') ?>">Mon compte</a>.
-        </p>
-        <a href="<?= htmlspecialchars(PUBLIC_URL . '/index.php') ?>" class="btn btn-primary">Retour à l'accueil</a>
-    </div>
-    <?php
-    require_once __DIR__ . '/../includes/footer.php';
-    exit;
-}
-
 $pageTitle = 'Admin POC — MecaBuddy';
 $currentPage = 'dev';
 $skipDemoAuthGuard = true;
 
+require_once __DIR__ . '/../includes/demo_auth.php';
+if (session_status() === PHP_SESSION_NONE) {
+    session_name(SESSION_NAME);
+    session_start();
+}
+requireDemoAdmin();
+
 require_once __DIR__ . '/../includes/header.php';
+require_once __DIR__ . '/../includes/demo_csrf.php';
+$devCsrfToken = demo_csrf_ensure_token();
+$appDebugOn = defined('APP_DEBUG') && APP_DEBUG;
 ?>
 
 <style>
@@ -112,9 +92,18 @@ require_once __DIR__ . '/../includes/header.php';
         Administration POC
     </h1>
     <p class="page-subtitle">
-        Paramètres persistants (<code class="dev-inline-code">config/settings.json</code>) — administration POC.
+        Paramètres persistants (<code class="dev-inline-code">config/settings.json</code>) — réservé aux administrateurs connectés.
+        <a href="<?= htmlspecialchars(PUBLIC_URL . '/admin.php') ?>" class="btn btn-secondary btn-sm" style="margin-left:8px">← Administration</a>
     </p>
 </div>
+<?php if (!$appDebugOn): ?>
+<div class="card login-card" style="max-width:720px;margin:0 auto 1.5rem;padding:1rem 1.25rem">
+    <p class="dev-hint" style="margin:0">
+        <code>APP_DEBUG</code> est désactivé : le panneau debug sur Tutoriel/Buddy et certaines traces LLM détaillées ne sont pas disponibles.
+        La gestion démo (comptes, quotas, providers) reste active ici.
+    </p>
+</div>
+<?php endif; ?>
 
 <div class="dev-admin">
 
@@ -407,12 +396,22 @@ require_once __DIR__ . '/../includes/header.php';
 <script>
 (function () {
     const API_BASE = '<?= htmlspecialchars(API_URL, ENT_QUOTES, 'UTF-8') ?>';
+    const DEV_CSRF = <?= json_encode($devCsrfToken, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+
+    function devApiFetch(url, options) {
+        const opts = Object.assign({}, options || {});
+        const method = String(opts.method || 'GET').toUpperCase();
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+            opts.headers = Object.assign({}, opts.headers, { 'X-CSRF-Token': DEV_CSRF });
+        }
+        return fetch(url, opts);
+    }
 
     /** État courant des paramètres (aligné sur getSettings / save_settings). */
     let currentSettings = {};
 
     async function loadInitialSettings() {
-        const res = await fetch(API_BASE + '/dev_api.php?action=get_settings');
+        const res = await devApiFetch(API_BASE + '/dev_api.php?action=get_settings');
         if (!res.ok) {
             throw new Error('Impossible de charger les paramètres');
         }
@@ -438,7 +437,7 @@ require_once __DIR__ . '/../includes/header.php';
         const el = document.getElementById('byok-stats');
         if (!el) return;
         try {
-            const res = await fetch(API_BASE + '/dev_api.php?action=get_byok_stats');
+            const res = await devApiFetch(API_BASE + '/dev_api.php?action=get_byok_stats');
             const data = await res.json();
             const s = data.stats || {};
             el.innerHTML = '<p>BYOK instance : <strong>' + (s.byok_enabled ? 'activé' : 'désactivé') + '</strong></p>'
@@ -453,7 +452,7 @@ require_once __DIR__ . '/../includes/header.php';
         const el = document.getElementById('demo-garages-table');
         if (!el) return;
         try {
-            const res = await fetch(API_BASE + '/dev_api.php?action=get_demo_garages');
+            const res = await devApiFetch(API_BASE + '/dev_api.php?action=get_demo_garages');
             const data = await res.json();
             if (!data.success) {
                 el.style.display = 'block';
@@ -485,7 +484,7 @@ require_once __DIR__ . '/../includes/header.php';
         const el = document.getElementById('demo-users-table');
         if (!el) return;
         try {
-            const res = await fetch(API_BASE + '/dev_api.php?action=get_demo_users');
+            const res = await devApiFetch(API_BASE + '/dev_api.php?action=get_demo_users');
             const data = await res.json();
             if (!data.success) {
                 el.style.display = 'block';
@@ -624,7 +623,7 @@ require_once __DIR__ . '/../includes/header.php';
         applyGeminiLimitsFromForm();
         showLoading(true);
         try {
-            const res = await fetch(API_BASE + '/dev_api.php?action=save_settings', {
+            const res = await devApiFetch(API_BASE + '/dev_api.php?action=save_settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(Object.assign({}, currentSettings, { llm_providers: providersForSave(currentSettings.llm_providers) }))
@@ -858,7 +857,7 @@ require_once __DIR__ . '/../includes/header.php';
                 btn.innerHTML = '<span class="btn-icon">⏳</span> Mise à jour en cours...';
                 result.style.display = 'none';
 
-                fetch(API_BASE + '/dev_api.php?action=rebuild_db', { method: 'POST' })
+                devApiFetch(API_BASE + '/dev_api.php?action=rebuild_db', { method: 'POST' })
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
@@ -946,7 +945,7 @@ require_once __DIR__ . '/../includes/header.php';
             if (!confirm('Supprimer les véhicules préconfigurés démo (seed) pour tous les comptes ?')) return;
             showLoading(true);
             try {
-                const res = await fetch(API_BASE + '/dev_api.php?action=reset_demo_vehicles', { method: 'POST' });
+                const res = await devApiFetch(API_BASE + '/dev_api.php?action=reset_demo_vehicles', { method: 'POST' });
                 const data = await res.json();
                 if (data.success) {
                     showToast('Garages démo réinitialisés', 'success');
@@ -964,7 +963,7 @@ require_once __DIR__ . '/../includes/header.php';
         document.getElementById('btn-rebuild-demo-vehicles')?.addEventListener('click', async () => {
             showLoading(true);
             try {
-                const res = await fetch(API_BASE + '/dev_api.php?action=rebuild_demo_vehicles', { method: 'POST' });
+                const res = await devApiFetch(API_BASE + '/dev_api.php?action=rebuild_demo_vehicles', { method: 'POST' });
                 const data = await res.json();
                 if (data.success) {
                     showToast('Véhicules démo recréés', 'success');
@@ -983,7 +982,7 @@ require_once __DIR__ . '/../includes/header.php';
             const statusEl = document.getElementById('migrate-demo-schema-status');
             showLoading(true);
             try {
-                const res = await fetch(API_BASE + '/dev_api.php?action=migrate_demo_schema', { method: 'POST' });
+                const res = await devApiFetch(API_BASE + '/dev_api.php?action=migrate_demo_schema', { method: 'POST' });
                 const data = await res.json();
                 if (statusEl) {
                     statusEl.style.display = 'block';
@@ -1018,7 +1017,7 @@ require_once __DIR__ . '/../includes/header.php';
         document.getElementById('btn-reset-demo-usage')?.addEventListener('click', async () => {
             showLoading(true);
             try {
-                const res = await fetch(API_BASE + '/dev_api.php?action=reset_demo_usage_today', { method: 'POST' });
+                const res = await devApiFetch(API_BASE + '/dev_api.php?action=reset_demo_usage_today', { method: 'POST' });
                 const data = await res.json();
                 if (data.success) {
                     showToast('Usages du jour réinitialisés', 'success');
@@ -1036,7 +1035,7 @@ require_once __DIR__ . '/../includes/header.php';
         document.getElementById('btn-rebuild-demo-users')?.addEventListener('click', async () => {
             showLoading(true);
             try {
-                const res = await fetch(API_BASE + '/dev_api.php?action=rebuild_demo_users', { method: 'POST' });
+                const res = await devApiFetch(API_BASE + '/dev_api.php?action=rebuild_demo_users', { method: 'POST' });
                 const data = await res.json();
                 if (data.success) {
                     showToast('Comptes démo recréés', 'success');
@@ -1110,7 +1109,7 @@ require_once __DIR__ . '/../includes/header.php';
                 showLoading(true);
                 setSearchTestResult('Recherche en cours…', false);
                 try {
-                    const res = await fetch(API_BASE + '/dev_api.php?action=test_search');
+                    const res = await devApiFetch(API_BASE + '/dev_api.php?action=test_search');
                     const data = await res.json().catch(function () { return {}; });
                     const providerLabel = {
                         serper: 'Serper',
@@ -1171,7 +1170,7 @@ require_once __DIR__ . '/../includes/header.php';
         document.getElementById('btnTestPlate').addEventListener('click', async function () {
             showLoading(true);
             try {
-                const res = await fetch(API_BASE + '/dev_api.php?action=test_plate');
+                const res = await devApiFetch(API_BASE + '/dev_api.php?action=test_plate');
                 const data = await res.json().catch(function () { return { parse_error: true }; });
                 setPlateTestOutput(data);
                 if (!res.ok) {
@@ -1218,7 +1217,7 @@ require_once __DIR__ . '/../includes/header.php';
                 }
                 showLoading(true);
                 try {
-                    const res = await fetch(API_BASE + '/dev_api.php?action=test_llm&provider_id=' + encodeURIComponent(pid));
+                    const res = await devApiFetch(API_BASE + '/dev_api.php?action=test_llm&provider_id=' + encodeURIComponent(pid));
                     const data = await res.json().catch(function () { return { success: false, error: 'JSON invalide' }; });
                     const block = {
                         ok: data.ok,

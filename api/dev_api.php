@@ -26,10 +26,19 @@ require_once __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../config/db_sqlite.php';
 require_once __DIR__ . '/../includes/demo_auth.php';
 require_once __DIR__ . '/../includes/demo_vehicles.php';
+require_once __DIR__ . '/../includes/demo_csrf.php';
 
 if (session_status() === PHP_SESSION_NONE) {
     session_name(SESSION_NAME);
     session_start();
+}
+
+requireDemoApiAdmin();
+demo_csrf_ensure_token();
+
+$__devApiMethod = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+if (!in_array($__devApiMethod, ['GET', 'HEAD', 'OPTIONS'], true)) {
+    demo_csrf_require_for_write_api();
 }
 
 /**
@@ -871,10 +880,6 @@ function handle_get_byok_stats(): void
 }
 
 $action = $_GET['action'] ?? $_POST['action'] ?? '';
-
-if (!defined('APP_DEBUG') || !APP_DEBUG) {
-    sendError('Administration POC disponible uniquement si APP_DEBUG est actif dans config/config.php', 403);
-}
 
 try {
     switch ($action) {

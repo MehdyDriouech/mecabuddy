@@ -1,0 +1,3 @@
+-- MecaBuddy — Rôle utilisateur démo (appliqué via migrateSQLiteDemoUserRole / migrateMysqlDemoUserRole)
+-- SQLite : ALTER TABLE demo_users ADD COLUMN role TEXT NOT NULL DEFAULT 'user';
+-- MySQL  : ALTER TABLE demo_users ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'user';
