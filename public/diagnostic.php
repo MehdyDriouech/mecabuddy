@@ -43,6 +43,16 @@ require_once __DIR__ . '/../config/db.php';
   margin-left: 8px;
   vertical-align: middle;
 }
+.buddy-heading {
+  margin: 0.75rem 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.message-bubble h5.buddy-heading {
+  font-size: 0.88rem;
+  margin-top: 0.5rem;
+}
 .failsafe-badge {
   background: rgba(217, 119, 6, 0.1);
   border: 1px solid rgba(217, 119, 6, 0.4);
@@ -52,6 +62,12 @@ require_once __DIR__ . '/../config/db.php';
   color: #d97706;
   margin-top: 10px;
   line-height: 1.5;
+}
+.typing-indicator .typing-msg {
+  min-height: 1.35em;
+  line-height: 1.4;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
 }
 </style>
 <?php
@@ -164,6 +180,34 @@ if (isset($_SESSION['vehicle_id'])) {
 const API_BASE = '<?= API_URL ?>';
 let isTyping = false;
 
+/** Messages de chargement Buddy — rotation pendant le diagnostic (pas d’i18n sur cette page). */
+const DIAGNOSTIC_LOADING_MESSAGES = [
+    'MecaBuddy ouvre le capot...',
+    'Inspection des symptômes...',
+    'On écoute les bruits suspects...',
+    'Vérification des pistes possibles...',
+    'Le garage virtuel s\'active...',
+    'On cherche la panne sans paniquer...',
+    'Analyse des indices mécaniques...',
+    'MecaBuddy suit les traces d\'huile...',
+    'Lecture entre les lignes du moteur...',
+    'On croise les symptômes...',
+    'Diagnostic en cours, clé de 12 à la main...',
+    'Le copilote mécanique réfléchit...',
+    'On sépare les vraies pistes des fausses alertes...',
+    'Buddy vérifie sous le capot...',
+    'Presque prêt, on affine le diagnostic...',
+];
+const DIAGNOSTIC_LOADING_INTERVAL_MS = 2000;
+const DIAGNOSTIC_LOADING_FADE_MS = 200;
+const DIAGNOSTIC_LOADING_SHOW_DELAY_MS = 500;
+
+let diagnosticLoadingIntervalId = null;
+let diagnosticLoadingShowTimerId = null;
+let diagnosticLoadingRotationActive = false;
+let diagnosticLoadingMessageIndex = 0;
+let diagnosticLoadingShuffled = [];
+
 // ============================================
 // Initialisation
 // ============================================
@@ -245,87 +289,91 @@ function resizeTextarea(textarea) {
 }
 
 // ============================================
-// Message de chargement diagnostic (un tirage, pas de rotation)
+// Messages de chargement diagnostic (rotation)
 // ============================================
-function showDiagnosticLoading() {
-    const messages = [
-        ['🔍 MecaBuddy consulte ses sources...', ''],
-        ['🧰 MecaBuddy sort ses outils mentaux...', ''],
-        ['📡 MecaBuddy interroge internet...', ''],
-        ['⚙️ MecaBuddy analyse le problème...', ''],
-        ['📖 MecaBuddy vérifie dans ses notes...', ''],
-        ['🤔 MecaBuddy réfléchit...', ''],
-        ['🔦 MecaBuddy inspecte tout ça...', ''],
-        ['🛠️ MecaBuddy s\'y colle...', ''],
-        ['🔩 MecaBuddy cherche la clé de 13...', ''],
-        ['🧪 MecaBuddy fait le diagnostic...', ''],
-    ].sort(() => Math.random() - 0.5);
-
-    const [msg, sub] = messages[0];
-
+function getDiagnosticTypingMsgEl() {
     const typingBubble = document.getElementById('typingIndicator')
         ?? document.querySelector('.typing-indicator')
         ?? document.querySelector('.buddy-typing');
-
     if (!typingBubble) {
-        const container = document.getElementById('chatMessages')
-            ?? document.querySelector('.messages-container, #chat-messages, .chat-body');
-        if (!container) {
-            return () => {};
-        }
-        const el = document.createElement('div');
-        el.className = 'message message-buddy typing-indicator typing-temp';
-        el.id = 'diagnostic-loading-msg';
-        el.innerHTML = `
-            <div class="message-avatar">🔧</div>
-            <div class="message-content">
-                <span class="typing-msg"></span>
-                ${sub ? '<span class="typing-sub"></span>' : ''}
-            </div>
-        `;
-        container.appendChild(el);
-        const msgEl = el.querySelector('.typing-msg');
-        const subEl = el.querySelector('.typing-sub');
-        if (msgEl) {
-            msgEl.textContent = msg;
-        }
-        if (subEl) {
-            subEl.textContent = sub;
-        }
-        el.style.display = 'flex';
-        el.scrollIntoView({ behavior: 'smooth', block: 'end' });
-        return () => {
-            el.remove();
-        };
+        return null;
     }
-
-    const msgEl = typingBubble.querySelector('#typingStatusMsg')
+    return typingBubble.querySelector('#typingStatusMsg')
         ?? typingBubble.querySelector('.typing-msg');
-    const subEl = typingBubble.querySelector('#typingStatusSub')
-        ?? typingBubble.querySelector('.typing-sub');
+}
 
-    if (msgEl) {
-        msgEl.textContent = msg;
+function setDiagnosticLoadingMessageText(msgEl, text) {
+    if (!msgEl || !diagnosticLoadingRotationActive) {
+        return;
     }
-    if (subEl) {
-        subEl.textContent = sub;
-    }
-
-    typingBubble.style.display = '';
-    typingBubble.scrollIntoView({ behavior: 'smooth', block: 'end' });
-
-    return () => {
-        if (typingBubble.id === 'diagnostic-loading-msg') {
-            typingBubble.remove();
+    msgEl.style.opacity = '0';
+    setTimeout(() => {
+        if (!diagnosticLoadingRotationActive || !msgEl.isConnected) {
             return;
         }
-        if (msgEl) {
-            msgEl.textContent = '';
-        }
-        if (subEl) {
-            subEl.textContent = '';
-        }
-    };
+        msgEl.textContent = text;
+        msgEl.style.opacity = '1';
+    }, DIAGNOSTIC_LOADING_FADE_MS);
+}
+
+function advanceDiagnosticLoadingMessage() {
+    const msgEl = getDiagnosticTypingMsgEl();
+    if (!msgEl || diagnosticLoadingShuffled.length === 0) {
+        return;
+    }
+    diagnosticLoadingMessageIndex = (diagnosticLoadingMessageIndex + 1) % diagnosticLoadingShuffled.length;
+    setDiagnosticLoadingMessageText(msgEl, diagnosticLoadingShuffled[diagnosticLoadingMessageIndex]);
+}
+
+function stopDiagnosticLoadingMessages() {
+    if (diagnosticLoadingShowTimerId !== null) {
+        clearTimeout(diagnosticLoadingShowTimerId);
+        diagnosticLoadingShowTimerId = null;
+    }
+    if (diagnosticLoadingIntervalId !== null) {
+        clearInterval(diagnosticLoadingIntervalId);
+        diagnosticLoadingIntervalId = null;
+    }
+    diagnosticLoadingRotationActive = false;
+    diagnosticLoadingShuffled = [];
+    diagnosticLoadingMessageIndex = 0;
+}
+
+function startDiagnosticLoadingMessages() {
+    stopDiagnosticLoadingMessages();
+
+    const msgEl = getDiagnosticTypingMsgEl();
+    if (!msgEl) {
+        return;
+    }
+
+    diagnosticLoadingShuffled = DIAGNOSTIC_LOADING_MESSAGES.slice().sort(() => Math.random() - 0.5);
+    diagnosticLoadingMessageIndex = 0;
+    diagnosticLoadingRotationActive = true;
+
+    msgEl.style.opacity = '1';
+    msgEl.textContent = diagnosticLoadingShuffled[0];
+
+    const typingBubble = msgEl.closest('.typing-indicator, .buddy-typing');
+    if (typingBubble) {
+        typingBubble.style.display = '';
+        typingBubble.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+
+    diagnosticLoadingIntervalId = setInterval(
+        advanceDiagnosticLoadingMessage,
+        DIAGNOSTIC_LOADING_INTERVAL_MS
+    );
+}
+
+function scheduleDiagnosticLoadingMessages() {
+    if (diagnosticLoadingShowTimerId !== null) {
+        clearTimeout(diagnosticLoadingShowTimerId);
+    }
+    diagnosticLoadingShowTimerId = setTimeout(() => {
+        diagnosticLoadingShowTimerId = null;
+        startDiagnosticLoadingMessages();
+    }, DIAGNOSTIC_LOADING_SHOW_DELAY_MS);
 }
 
 // ============================================
@@ -342,12 +390,8 @@ async function sendMessage(message) {
     // Cache les suggestions après le premier message
     document.getElementById('quickSuggestions').classList.add('hidden');
 
-    let shown = false;
-    let stopDiagnosticLoading = null;
-    const showTimer = setTimeout(() => {
-        shown = true;
-        stopDiagnosticLoading = showDiagnosticLoading();
-    }, 500);
+    stopDiagnosticLoadingMessages();
+    scheduleDiagnosticLoadingMessages();
 
     if (window.DebugPanel) {
         DebugPanel.start();
@@ -363,15 +407,12 @@ async function sendMessage(message) {
         
         const data = await response.json();
 
-        clearTimeout(showTimer);
-        if (shown && stopDiagnosticLoading) {
-            stopDiagnosticLoading();
-        }
-        
+        stopDiagnosticLoadingMessages();
+
         // Retire l'indicateur de frappe
         hideTypingIndicator();
         isTyping = false;
-        
+
         if (data.success) {
             if (window.DebugPanel) {
                 if (data.debug) {
@@ -416,10 +457,7 @@ async function sendMessage(message) {
             addMessage("Oups, j'ai eu un petit bug ! 🤖 Réessaie dans quelques secondes.", 'buddy');
         }
     } catch (error) {
-        clearTimeout(showTimer);
-        if (shown && stopDiagnosticLoading) {
-            stopDiagnosticLoading();
-        }
+        stopDiagnosticLoadingMessages();
         if (window.DebugPanel) {
             DebugPanel.error('Fetch échoué', error?.message || String(error));
         }
@@ -541,6 +579,10 @@ function formatMessage(text) {
     // Échappe le HTML
     text = escapeHtml(text);
     
+    // Titres markdown (structure diagnostic Buddy)
+    text = text.replace(/^### (.+)$/gm, '<h5 class="buddy-heading">$1</h5>');
+    text = text.replace(/^## (.+)$/gm, '<h4 class="buddy-heading">$1</h4>');
+
     // Convertit les sauts de ligne
     text = text.replace(/\n/g, '<br>');
     

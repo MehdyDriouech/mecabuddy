@@ -175,7 +175,8 @@ function tutorial_finalize_llm_tutorial(
         require_once __DIR__ . '/../includes/llm_tutorial.php';
     }
 
-    $norm = tutorial_normalize_llm_payload($rawLlmTutorial);
+    $vehicleForNorm = $vehicleRow ?? $vehContext;
+    $norm = tutorial_normalize_llm_payload($rawLlmTutorial, $vehicleForNorm);
     if ($norm === null) {
         return null;
     }
@@ -192,6 +193,17 @@ function tutorial_finalize_llm_tutorial(
 
     $tutorial = applySafetyLayer($tutorial);
     $tutorial = tutorial_merge_raw_global_warnings($tutorial, $rawLlmTutorial);
+
+    if (!defined('TUTORIAL_VISUAL_SEARCH_LOADED')) {
+        require_once __DIR__ . '/../includes/tutorial_visual_search.php';
+    }
+    if (isset($tutorial['steps']) && is_array($tutorial['steps'])) {
+        $tutorial['steps'] = tutorial_enrich_steps_with_visuals(
+            $tutorial['steps'],
+            $vehicleForNorm,
+            $actionType
+        );
+    }
 
     $dbVehicleId = $vehContext !== null ? $sessionVehicleId : null;
     $tutorialId = saveTutorial($tutorial, $actionType, $dbVehicleId);

@@ -182,6 +182,7 @@ try {
                 handleLookupPlateMock();
                 break;
             case 'garage':
+                mock_db_diag_log_garage_blocked();
                 sendError('Action garage non disponible en mode mock', 501);
                 break;
             case 'set_active':
@@ -200,10 +201,13 @@ try {
                 sendError('Action non reconnue. Actions disponibles: current, garage, brands, models, save, set_active, set_current, delete_vehicle, lookup, clear', 400);
         }
     } 
-    // Mode NORMAL - utilise MySQL
+    // Mode NORMAL - SQLite (ou MySQL si configuré)
     else {
         $db = getDB();
-        
+        if (function_exists('isDemoAuthEnabled') && isDemoAuthEnabled()) {
+            assertVehicleDemoSchemaReady($db);
+        }
+
         switch ($action) {
             case 'current':
                 handleGetCurrent($db);
@@ -253,6 +257,8 @@ try {
     } else {
         sendError('Erreur interne du serveur', 500);
     }
+} catch (RuntimeException $e) {
+    sendError($e->getMessage(), 500);
 } catch (Exception $e) {
     sendError($e->getMessage(), 400);
 }
@@ -492,7 +498,7 @@ function handleGetCurrent(PDO $db): void {
         sendError('slot invalide (valeurs: 1, 2, 3)');
     }
 
-    $scope = vehicle_scope_owner_sql();
+    $scope = vehicle_scope_owner_sql('v');
     $stmt = $db->prepare(
         "SELECT v.*, COALESCE(vb.category, 'car') AS category
          FROM vehicles v

@@ -42,10 +42,10 @@ function initSQLite(): PDO
     migrateSQLiteVehicleCatalog($pdo);
     migrateSQLiteDemoAuth($pdo);
 
-    if (!function_exists('migrateSQLiteDemoVehicles')) {
+    if (!function_exists('migrateVehicleDemoSchema')) {
         require_once dirname(__DIR__) . '/includes/demo_vehicles.php';
     }
-    migrateSQLiteDemoVehicles($pdo);
+    migrateVehicleDemoSchema($pdo);
 
     return $pdo;
 }

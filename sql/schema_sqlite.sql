@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS vehicles (
     session_id VARCHAR(128) DEFAULT NULL,
     is_active INTEGER DEFAULT 0 CHECK (is_active IN (0, 1)),
     slot INTEGER DEFAULT NULL CHECK (slot IS NULL OR slot IN (1, 2, 3)),
+    demo_user_id INTEGER DEFAULT NULL,
+    is_demo_seed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -27,6 +29,7 @@ CREATE TABLE IF NOT EXISTS vehicles (
 CREATE INDEX IF NOT EXISTS idx_license_plate ON vehicles(license_plate);
 CREATE INDEX IF NOT EXISTS idx_brand_model ON vehicles(brand, model);
 CREATE INDEX IF NOT EXISTS idx_session_id ON vehicles(session_id);
+CREATE INDEX IF NOT EXISTS idx_vehicles_demo_user_id ON vehicles(demo_user_id);
 
 CREATE TRIGGER IF NOT EXISTS trg_vehicles_updated_at
 AFTER UPDATE ON vehicles

@@ -647,6 +647,212 @@ function renderTutorialSources(sources) {
     </div>`;
 }
 
+function renderTutorialPrefaceList(items) {
+    if (!items || !items.length) {
+        return '';
+    }
+    return '<ul>' + items.map((item) => '<li>' + escapeHtml(String(item)) + '</li>').join('') + '</ul>';
+}
+
+function tutorialStepsHaveWebVisuals(steps) {
+    return Array.isArray(steps) && steps.some((s) => s && s.needs_visual === true);
+}
+
+function tutorialStepsHaveCriticalVisualWarning(steps) {
+    return Array.isArray(steps)
+        && steps.some((s) => s && s.needs_visual === true && s.visual_critical_warning === true);
+}
+
+function renderTutorialVisualsGlobalNotice(includeCriticalWarning) {
+    let html = '<aside class="tutorial-visuals-notice" role="note" aria-label="Avertissement visuels web">';
+    html += '<h4 class="tutorial-visuals-notice-title">Visuels web indicatifs</h4>';
+    html += '<p class="tutorial-visuals-notice-lead">Ces images peuvent aider à localiser une pièce ou comprendre une étape. '
+        + 'Elles peuvent varier selon le véhicule, la motorisation et l\'année. '
+        + 'Vérifiez toujours avec votre documentation technique.</p>';
+    if (includeCriticalWarning) {
+        html += '<p class="tutorial-visuals-notice-critical"><strong>Attention :</strong> cette intervention concerne un organe critique. '
+            + 'Les visuels web sont uniquement indicatifs. En cas de doute, faites vérifier par un professionnel.</p>';
+    }
+    html += '<details class="tutorial-visuals-notice-more">';
+    html += '<summary class="tutorial-visuals-notice-more-toggle">En savoir plus</summary>';
+    html += '<p class="tutorial-visuals-notice-detail">Les visuels proviennent de résultats web externes. '
+        + 'MecaBuddy ne peut pas garantir qu\'ils correspondent exactement à votre véhicule. '
+        + 'Vérifiez toujours la compatibilité avec votre modèle, votre motorisation, votre année '
+        + 'et votre documentation technique avant toute intervention.</p>';
+    html += '</details></aside>';
+    return html;
+}
+
+function renderTutorialVisualResultCard(r) {
+    const pageUrl = escapeHtml(String(r.page_url || ''));
+    const imgUrl = String(r.image_url || '').trim();
+    const domain = escapeHtml(String(r.source_domain || ''));
+    let html = '<div class="step-visual-result">';
+    html += '<div class="step-visual-result-media">';
+    html += '<span class="visual-indicative-badge">Visuel indicatif</span>';
+    if (imgUrl && /^https?:\/\//i.test(imgUrl) && pageUrl) {
+        html += '<a href="' + pageUrl + '" target="_blank" rel="noopener noreferrer" class="step-visual-thumb-link">';
+        html += '<img src="' + escapeHtml(imgUrl) + '" alt="" class="step-visual-thumb" loading="lazy" '
+            + 'referrerpolicy="no-referrer" onerror="this.closest(\'.step-visual-result-media\')?.classList.add(\'no-thumb\')">';
+        html += '</a>';
+    }
+    html += '</div><div class="step-visual-meta">';
+    if (domain) {
+        html += '<span class="step-visual-domain">' + domain + '</span>';
+    }
+    if (pageUrl) {
+        html += '<a href="' + pageUrl + '" target="_blank" rel="noopener noreferrer" class="step-visual-open">Ouvrir la source</a>';
+    }
+    html += '</div></div>';
+    return html;
+}
+
+function renderTutorialStepVisuals(step) {
+    if (!step || step.needs_visual !== true) {
+        return '';
+    }
+
+    const typeLabels = {
+        part_location: 'Localisation de pièce',
+        engine_view: 'Vue moteur',
+        connector: 'Connecteur',
+        clip_fastener: 'Clip ou languette',
+        fastener: 'Vis de fixation',
+        removal_direction: 'Sens de démontage',
+        tool_in_use: 'Outil utilisé',
+        before_after: 'Comparaison avant/après',
+        safety_diagram: 'Schéma de sécurité',
+        fluid_level_leak: 'Repère niveau ou fuite',
+        generic: 'Visuel d\'aide',
+    };
+
+    const vType = step.visual_type ? (typeLabels[step.visual_type] || step.visual_type) : 'Visuel d\'aide';
+    const purpose = step.visual_purpose ? escapeHtml(String(step.visual_purpose)) : '';
+    const queries = Array.isArray(step.visual_search_queries) ? step.visual_search_queries : [];
+    const results = Array.isArray(step.visual_results) ? step.visual_results : [];
+    const manualLinks = Array.isArray(step.visual_manual_links) ? step.visual_manual_links : [];
+
+    let html = '<div class="step-visuals">';
+    html += '<p class="step-visuals-kicker"><span class="step-visuals-type">' + escapeHtml(vType) + '</span>';
+    if (purpose) {
+        html += ' — <span class="step-visual-purpose">' + purpose + '</span>';
+    }
+    html += '</p>';
+
+    if (results.length) {
+        html += '<div class="step-visual-results">';
+        results.forEach((r) => {
+            html += renderTutorialVisualResultCard(r);
+        });
+        html += '</div>';
+    } else {
+        html += '<p class="step-visual-fallback">Aucun visuel fiable trouvé automatiquement.</p>';
+        if (manualLinks.length) {
+            html += '<ul class="step-visual-manual">';
+            manualLinks.forEach((link) => {
+                const url = escapeHtml(String(link.url || ''));
+                const label = escapeHtml(String(link.label || 'Rechercher'));
+                html += '<li><a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + '</a></li>';
+            });
+            html += '</ul>';
+        } else if (queries.length) {
+            html += '<ul class="step-visual-manual">';
+            queries.slice(0, 3).forEach((q) => {
+                const label = escapeHtml(String(q));
+                const url = 'https://duckduckgo.com/?q=' + encodeURIComponent(String(q)) + '&iax=images&ia=images';
+                html += '<li><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + label + '</a></li>';
+            });
+            html += '</ul>';
+        }
+    }
+
+    html += '</div>';
+    return html;
+}
+
+function buildTutorialStepsHtml(steps) {
+    const showVisualNotice = tutorialStepsHaveWebVisuals(steps);
+    const showCriticalNotice = tutorialStepsHaveCriticalVisualWarning(steps);
+    let visualNoticeInserted = false;
+
+    return steps.map((step, index) => {
+        let visualNoticePrefix = '';
+        if (showVisualNotice && !visualNoticeInserted && step.needs_visual === true) {
+            visualNoticePrefix = renderTutorialVisualsGlobalNotice(showCriticalNotice);
+            visualNoticeInserted = true;
+        }
+
+        return visualNoticePrefix + `
+        <div class="tutorial-step ${step.danger ? 'step-danger' : ''}" data-step="${index + 1}">
+            <div class="step-header">
+                <span class="step-number">${index + 1}</span>
+                <h4 class="step-title">${escapeHtml(step.title || '')}</h4>
+                ${step.danger ? `<span class="step-danger-badge">${getDangerIcon(step.danger_level)} Attention</span>` : ''}
+            </div>
+            <div class="step-content">
+                <p class="step-description">${escapeHtml(step.description || '')}</p>
+                ${renderTutorialStepVisuals(step)}
+                ${step.warnings?.length ? `
+                    <div class="step-warnings">
+                        ${step.warnings.map(w => `<div class="step-warning">${escapeHtml(w)}</div>`).join('')}
+                    </div>
+                ` : ''}
+            </div>
+            ${index < steps.length - 1 ? `
+                <button type="button" class="btn-next-step" onclick="scrollToStep(${index + 2})">
+                    Étape suivante →
+                </button>
+            ` : `
+                <div class="step-final">
+                    <span class="final-icon">🎉</span>
+                    <span class="final-text">Tutoriel terminé !</span>
+                </div>
+            `}
+        </div>`;
+    }).join('');
+}
+
+function renderTutorialPreface(preface) {
+    if (!preface || typeof preface !== 'object') {
+        return '';
+    }
+    const sections = [];
+    if (preface.before_start) {
+        sections.push(
+            '<div class="preface-section"><h4>Avant de commencer</h4><p>'
+            + escapeHtml(String(preface.before_start)).replace(/\n/g, '<br>') + '</p></div>'
+        );
+    }
+    if (preface.compatible_symptoms?.length) {
+        sections.push(
+            '<div class="preface-section"><h4>Symptômes compatibles</h4>'
+            + renderTutorialPrefaceList(preface.compatible_symptoms) + '</div>'
+        );
+    }
+    if (preface.other_causes?.length) {
+        sections.push(
+            '<div class="preface-section"><h4>Autres causes possibles</h4>'
+            + renderTutorialPrefaceList(preface.other_causes) + '</div>'
+        );
+    }
+    if (preface.pre_checks?.length) {
+        sections.push(
+            '<div class="preface-section"><h4>Vérifications rapides avant démontage</h4>'
+            + renderTutorialPrefaceList(preface.pre_checks) + '</div>'
+        );
+    }
+    if (preface.when_professional) {
+        sections.push(
+            '<div class="preface-section preface-professional"><h4>Quand consulter un professionnel</h4><p>'
+            + escapeHtml(String(preface.when_professional)).replace(/\n/g, '<br>') + '</p></div>'
+        );
+    }
+    if (sections.length === 0) {
+        return '';
+    }
+    return '<div class="tutorial-preface">' + sections.join('') + '</div>';
+}
+
 function displayTutorial(tutorial, generatedBy, sources, failsafe = false) {
     const display = document.getElementById('tutorialDisplay');
     
@@ -668,10 +874,12 @@ function displayTutorial(tutorial, generatedBy, sources, failsafe = false) {
         </span>
     ` : '';
     
+    const prefaceBlock = renderTutorialPreface(tutorial.preface);
+
     // Génère les avertissements globaux
     const globalWarnings = tutorial.global_warnings?.length ? `
         <div class="global-warnings">
-            ${tutorial.global_warnings.map(w => `<div class="warning-item">${w}</div>`).join('')}
+            ${tutorial.global_warnings.map(w => `<div class="warning-item">${escapeHtml(w)}</div>`).join('')}
         </div>
     ` : '';
     
@@ -692,33 +900,7 @@ function displayTutorial(tutorial, generatedBy, sources, failsafe = false) {
     ` : '';
     
     // Génère les étapes
-    const steps = tutorial.steps.map((step, index) => `
-        <div class="tutorial-step ${step.danger ? 'step-danger' : ''}" data-step="${index + 1}">
-            <div class="step-header">
-                <span class="step-number">${index + 1}</span>
-                <h4 class="step-title">${step.title}</h4>
-                ${step.danger ? `<span class="step-danger-badge">${getDangerIcon(step.danger_level)} Attention</span>` : ''}
-            </div>
-            <div class="step-content">
-                <p class="step-description">${step.description}</p>
-                ${step.warnings?.length ? `
-                    <div class="step-warnings">
-                        ${step.warnings.map(w => `<div class="step-warning">${w}</div>`).join('')}
-                    </div>
-                ` : ''}
-            </div>
-            ${index < tutorial.steps.length - 1 ? `
-                <button type="button" class="btn-next-step" onclick="scrollToStep(${index + 2})">
-                    Étape suivante →
-                </button>
-            ` : `
-                <div class="step-final">
-                    <span class="final-icon">🎉</span>
-                    <span class="final-text">Tutoriel terminé !</span>
-                </div>
-            `}
-        </div>
-    `).join('');
+    const steps = buildTutorialStepsHtml(tutorial.steps);
     
     display.innerHTML = `
         <div class="tutorial-card">
@@ -731,9 +913,10 @@ function displayTutorial(tutorial, generatedBy, sources, failsafe = false) {
                 <h2 class="tutorial-title">${escapeHtml(tutorial.title)}${llmBadge}</h2>
                 ${sourcesBlock}
                 ${vehicleCtxBadge}
-                <p class="tutorial-description">${tutorial.description}</p>
+                <p class="tutorial-description">${escapeHtml(tutorial.description || '')}</p>
             </div>
             
+            ${prefaceBlock}
             ${globalWarnings}
             
             <div class="tutorial-requirements">

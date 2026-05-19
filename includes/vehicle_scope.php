@@ -26,7 +26,7 @@ function vehicle_scope_demo_user_id(): ?int
 /**
  * @return array{sql: string, params: list<mixed>, mode: string, demo_user_id: int|null}
  */
-function vehicle_scope_owner_sql(string $alias = 'v'): array
+function vehicle_scope_owner_sql(string $alias = ''): array
 {
     $prefix = $alias !== '' ? $alias . '.' : '';
     $demoUserId = vehicle_scope_demo_user_id();

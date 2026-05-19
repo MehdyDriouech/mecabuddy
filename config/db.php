@@ -7,6 +7,7 @@
 
 require_once __DIR__ . '/db_sqlite.php';
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/mock_db_diag.php';
 
 /**
  * Mode démo : données applicatives (véhicules, tutoriels, etc.) via MockDatabase,
@@ -44,11 +45,25 @@ function isDatabaseAvailable(): bool
         return $available;
     }
 
-    if (db_is_demo_mode()) {
+    $mysqlEnabled = defined('USE_MYSQL') && USE_MYSQL;
+    $demoMode = db_is_demo_mode();
+
+    if ($demoMode) {
         $available = false;
+        mock_db_diag_log_unavailable([
+            'reason' => 'demo_mode',
+            'demo_mode' => true,
+            'sqlite_ok' => false,
+            'sqlite_error' => 'skipped_demo_mode',
+            'mysql_enabled' => $mysqlEnabled,
+            'mysql_ok' => false,
+            'use_mock_db' => true,
+        ]);
 
         return $available;
     }
+
+    $sqliteError = null;
 
     try {
         getSQLite();
@@ -56,10 +71,14 @@ function isDatabaseAvailable(): bool
 
         return $available;
     } catch (\Exception $e) {
-        // poursuite vers MySQL
+        $sqliteError = $e->getMessage();
     }
 
-    if (defined('USE_MYSQL') && USE_MYSQL) {
+    $mysqlOk = false;
+    $mysqlError = null;
+    $reason = 'sqlite_failed';
+
+    if ($mysqlEnabled) {
         try {
             $dsn = sprintf('mysql:host=%s;dbname=%s;charset=%s', DB_HOST, DB_NAME, DB_CHARSET);
             $pdo = new PDO($dsn, DB_USER, DB_PASS, [
@@ -71,13 +90,24 @@ function isDatabaseAvailable(): bool
 
             return $available;
         } catch (PDOException $e) {
-            $available = false;
-
-            return $available;
+            $mysqlError = $e->getMessage();
+            $reason = 'sqlite_and_mysql_failed';
         }
+    } else {
+        $reason = 'sqlite_failed_no_mysql_fallback';
     }
 
     $available = false;
+    mock_db_diag_log_unavailable([
+        'reason' => $reason,
+        'demo_mode' => false,
+        'sqlite_ok' => false,
+        'sqlite_error' => $sqliteError,
+        'mysql_enabled' => $mysqlEnabled,
+        'mysql_ok' => $mysqlOk,
+        'mysql_error' => $mysqlError,
+        'use_mock_db' => true,
+    ]);
 
     return $available;
 }
@@ -166,7 +196,14 @@ class Database
  */
 function getDB(): PDO
 {
-    return Database::getInstance();
+    $pdo = Database::getInstance();
+
+    if (!function_exists('migrateVehicleDemoSchema')) {
+        require_once dirname(__DIR__) . '/includes/demo_vehicles.php';
+    }
+    migrateVehicleDemoSchema($pdo);
+
+    return $pdo;
 }
 
 /**

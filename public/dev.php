@@ -166,7 +166,9 @@ require_once __DIR__ . '/../includes/header.php';
             <button type="button" class="btn btn-secondary btn-sm" id="btn-refresh-demo-users">Rafraîchir</button>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-reset-demo-vehicles">Réinitialiser garages démo</button>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-rebuild-demo-vehicles">Recréer véhicules démo</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-migrate-demo-schema">Migrer schéma garage démo (SQLite)</button>
         </div>
+        <div id="migrate-demo-schema-status" class="dev-status" style="display:none;margin-top:8px"></div>
         <div id="demo-users-table" class="dev-status" style="margin-top:12px;display:none"></div>
         <div id="demo-garages-table" class="dev-status" style="margin-top:12px;display:none"></div>
     </section>
@@ -185,12 +187,13 @@ require_once __DIR__ . '/../includes/header.php';
     <section class="dev-section dev-section--global" style="border-top:1px solid var(--border,#333);padding-top:16px;margin-top:0">
         <h2>🗄️ Base de données</h2>
         <p class="dev-hint">
-            Rejoue les INSERT du schéma SQLite (nouvelles marques, modèles, motorisations).
+            <strong>Migration catalogue SQLite</strong> — rejoue les INSERT du schéma (marques, modèles, motorisations)
+            et applique les migrations de structure (dont colonnes garage démo).
             N'efface aucune donnée existante — utilise INSERT OR IGNORE.
         </p>
         <button type="button" id="btn-rebuild-db" class="btn btn-secondary">
             <span class="btn-icon">🔄</span>
-            Mettre à jour le référentiel (marques / modèles / moteurs)
+            Migration catalogue SQLite
         </button>
         <div id="rebuild-result" class="dev-status" style="display:none;margin-top:10px"></div>
     </section>
@@ -970,6 +973,42 @@ require_once __DIR__ . '/../includes/header.php';
                     showToast(data.error || 'Erreur', 'error');
                 }
             } catch (e) {
+                showToast('Erreur réseau', 'error');
+            } finally {
+                showLoading(false);
+            }
+        });
+
+        document.getElementById('btn-migrate-demo-schema')?.addEventListener('click', async () => {
+            const statusEl = document.getElementById('migrate-demo-schema-status');
+            showLoading(true);
+            try {
+                const res = await fetch(API_BASE + '/dev_api.php?action=migrate_demo_schema', { method: 'POST' });
+                const data = await res.json();
+                if (statusEl) {
+                    statusEl.style.display = 'block';
+                }
+                if (data.success) {
+                    const cols = data.columns || {};
+                    const ok = cols.demo_user_id && cols.is_demo_seed;
+                    const path = data.sqlite_path ? '<br><small>' + escapeHtml(data.sqlite_path) + '</small>' : '';
+                    if (statusEl) {
+                        statusEl.innerHTML = ok
+                            ? '✅ Colonnes <code>demo_user_id</code> et <code>is_demo_seed</code> présentes.' + path
+                            : '⚠️ ' + escapeHtml(data.error || 'Migration incomplète') + path;
+                    }
+                    showToast(ok ? 'Schéma garage démo migré' : 'Migration incomplète', ok ? 'success' : 'warning');
+                } else {
+                    if (statusEl) {
+                        statusEl.textContent = '❌ ' + (data.error || 'Erreur');
+                    }
+                    showToast(data.error || 'Erreur', 'error');
+                }
+            } catch (e) {
+                if (statusEl) {
+                    statusEl.style.display = 'block';
+                    statusEl.textContent = '❌ Erreur réseau';
+                }
                 showToast('Erreur réseau', 'error');
             } finally {
                 showLoading(false);

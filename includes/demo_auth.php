@@ -33,6 +33,10 @@ function demo_auth_pdo(): ?PDO
         if (function_exists('migrateSQLiteDemoAuth')) {
             migrateSQLiteDemoAuth($pdo);
         }
+        if (!function_exists('migrateSQLiteDemoVehicles')) {
+            require_once __DIR__ . '/demo_vehicles.php';
+        }
+        migrateSQLiteDemoVehicles($pdo);
 
         return $pdo;
     } catch (Throwable $e) {

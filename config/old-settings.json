@@ -5,7 +5,7 @@
         "provider": "apiplaqueimmatriculation"
     },
     "llm_fallback_enabled": false,
-    "demo_mode": false,
+    "demo_mode": true,
     "demo_auth_enabled": true,
     "debug_panel": true,
     "serper_api_key": "",

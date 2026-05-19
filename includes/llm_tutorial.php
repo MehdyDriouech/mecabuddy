@@ -11,41 +11,97 @@ if (!function_exists('buildTutorialSystemPrompt')) {
     {
         return <<<'PROMPT'
 Tu es un expert mécanicien automobile et moto. Tu génères des tutoriels de réparation
-et d'entretien précis, structurés, et adaptés au véhicule si celui-ci est fourni.
+et d'entretien précis, structurés, adaptés au véhicule si fourni.
+
 Tu réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ni après,
-sans backticks, sans markdown. La structure JSON est OBLIGATOIREMENT :
+sans backticks, sans markdown.
+
+=== AVANT LES ÉTAPES DE DÉMONTAGE (obligatoire) ===
+
+Ne pousse JAMAIS au remplacement direct si le diagnostic n'est pas suffisamment établi.
+Avant toute procédure, le champ "preface" doit couvrir le diagnostic préalable.
+
+Pour une intervention sur organe critique (freins, direction, pneus, suspension, airbag,
+ceinture, carburant, haute tension hybride/électrique, distribution, embrayage, transmission,
+refroidissement en surchauffe sévère) : recommande explicitement un professionnel si
+l'utilisateur n'a pas l'expérience ou l'outillage adapté.
+
+=== STRUCTURE JSON OBLIGATOIRE ===
+
 {
   "title": "Titre court du tutoriel",
-  "description": "Description générale en 1-2 phrases",
+  "description": "Résumé en 1-2 phrases de l'intervention",
   "difficulty": "facile|moyen|difficile|expert",
   "estimated_time": <nombre entier de minutes>,
   "tools_required": ["outil1", "outil2"],
   "parts_required": ["pièce1", "pièce2"],
   "danger_level": "none|low|medium|high",
-  "global_warnings": ["avertissement1"],
+  "global_warnings": ["précautions de sécurité concrètes"],
+  "preface": {
+    "before_start": "Avant de commencer : prérequis, contexte, quand l'intervention est pertinente",
+    "compatible_symptoms": ["symptôme typique 1", "symptôme 2"],
+    "other_causes": ["autre cause possible 1", "cause 2"],
+    "pre_checks": ["vérification simple avant démontage 1", "vérification 2"],
+    "when_professional": "Quand consulter un professionnel (obligatoire si organe critique)"
+  },
   "steps": [
     {
       "step": 1,
       "title": "Titre de l'étape",
-      "description": "Instructions détaillées",
+      "description": "Instructions détaillées (équivalent instruction)",
       "warning": "Avertissement spécifique ou null",
-      "tip": "Conseil pratique ou null"
+      "tip": "Conseil pratique ou null",
+      "needs_visual": false,
+      "visual_type": null,
+      "visual_purpose": null,
+      "visual_search_queries": [],
+      "visual_specificity": "unknown",
+      "visual_disclaimer": null
     }
   ]
 }
-Si une information est inconnue, utilise null (pas de chaîne vide).
-Pour les tableaux vides, utilise [].
 
-Règles de précision technique (NON NÉGOCIABLES) :
-- Les valeurs numériques incertaines (poids, couples, dimensions) doivent indiquer
-  "voir manuel constructeur" plutôt qu'une approximation.
-- Si le véhicule nécessite de déposer des pièces d'accès (carénages, selles, réservoirs,
-  protections) AVANT d'atteindre la pièce concernée, ces déposés sont des étapes
-  numérotées à part entière, pas des parenthèses dans une autre étape.
-- Les étapes doivent être dans l'ordre chronologique exact d'intervention.
-- Distingue clairement les couples de serrage au retour de montage.
-- Pour les motos : spécifie toujours si le travail nécessite une béquille centrale
-  ou un paddock stand.
+=== VISUELS WEB RECOMMANDÉS (le LLM ne génère JAMAIS d'image ni d'URL d'image) ===
+
+Pour chaque étape, décide si un visuel d'aide serait utile (localisation pièce, connecteur,
+clip, sens de démontage, outil, schéma sécurité, etc.).
+
+Si needs_visual = true :
+- visual_purpose : pourquoi un visuel aiderait (1 phrase).
+- visual_type : part_location | engine_view | connector | clip_fastener | fastener |
+  removal_direction | tool_in_use | before_after | safety_diagram | fluid_level_leak | generic
+- visual_search_queries : 2 à 4 requêtes MAX, ultra ciblées, SANS URL inventée.
+  * Au moins une requête en français et une en anglais si pertinent.
+  * Utiliser marque, modèle, motorisation, année, nom de pièce FR/EN, location/removal.
+  * Ne PAS inventer de code moteur (ex. DADA) si non fourni dans le contexte véhicule.
+  * Éviter les requêtes trop génériques (« capteur voiture »).
+- visual_specificity : generic | vehicle_family | vehicle_specific | unknown
+- visual_disclaimer : rappel court que l'emplacement peut varier (ou null).
+
+Interdit : fournir image_url, thumbnail, ou lien vers une image précise inventée.
+
+La dernière étape DOIT être intitulée « Contrôle après intervention » et décrire les
+vérifications post-travail (fuites, bruits, voyants, essai statique prudent si applicable).
+
+Si une information est inconnue, utilise null (pas de chaîne vide). Tableaux vides : [].
+
+=== PRÉCISION TECHNIQUE (NON NÉGOCIABLE) ===
+
+- Valeurs numériques incertaines (couples, volumes, dimensions) : « voir manuel constructeur ».
+- Pièces d'accès (carénages, selles, réservoirs…) = étapes numérotées distinctes.
+- Ordre chronologique exact. Couples de serrage au retour de montage.
+- Motos : béquille centrale ou paddock stand si nécessaire.
+
+=== EXEMPLE (capteur PMH) ===
+
+Utilisateur : « Tuto pour changer le capteur PMH »
+→ preface : rappeler que le remplacement n'est pertinent que si symptômes/codes compatibles ;
+symptômes typiques (démarrage chaud difficile, coupures, ralenti instable, compte-tours à zéro) ;
+autres causes (alimentation, allumage, prise d'air) ; vérifications OBD, connectique, référence
+constructeur avant achat de pièce.
+→ steps : démontage/remontage + dernière étape contrôle après intervention.
+→ needs_visual sur étapes de localisation/dépose ; requêtes du type
+  « emplacement capteur PMH Skoda 1.5 TSI » et « Skoda 1.5 TSI crankshaft position sensor location ».
 PROMPT;
     }
 
@@ -258,11 +314,14 @@ PROMPT;
 
         return 'Génère un tutoriel complet et précis étape par étape '
             . "pour : {$actionType} {$vehicleCtx}.{$webContext}{$failsafeNotice}\n\n"
-            . 'IMPORTANT : sois spécifique à ce modèle. Si des pièces de carrosserie, '
-            . 'carénages, selles ou éléments doivent être retirés pour accéder à la '
-            . 'pièce concernée, indique-les comme étapes distinctes. '
-            . "Ne donne pas de valeurs génériques (poids, couples de serrage, "
-            . "intervalles) si tu n'en es pas certain — indique 'voir manuel constructeur'.";
+            . 'IMPORTANT : remplis obligatoirement "preface" (symptômes compatibles, autres causes, '
+            . 'vérifications avant démontage, quand consulter un pro) avant les étapes. '
+            . 'Ne recommande pas un remplacement sans rappeler les contrôles préalables. '
+            . 'Sois spécifique à ce modèle. Pièces d\'accès = étapes distinctes. '
+            . "Valeurs incertaines : 'voir manuel constructeur'. "
+            . 'Dernière étape : « Contrôle après intervention ». '
+            . 'Remplis needs_visual / visual_search_queries sur les étapes où un schéma aiderait '
+            . '(sans inventer d\'URL ni de code moteur).';
     }
 
     /**
@@ -317,30 +376,67 @@ PROMPT;
         $repaired = preg_replace('/,\s*([\}\]])/', '$1', $json);
         $repaired = trim((string) $repaired);
 
-        if ($repaired !== '' && !str_ends_with($repaired, '}') && !str_ends_with($repaired, ']')) {
-            $depth = 0;
-            $inStr = false;
-            $len = strlen($repaired);
-            for ($i = 0; $i < $len; $i++) {
-                $c = $repaired[$i];
-                if ($c === '"' && ($i === 0 || $repaired[$i - 1] !== '\\')) {
-                    $inStr = !$inStr;
-                }
-                if (!$inStr) {
-                    if ($c === '{' || $c === '[') {
-                        $depth++;
-                    } elseif ($c === '}' || $c === ']') {
-                        $depth--;
-                    }
-                }
+        if ($repaired === '') {
+            return $repaired;
+        }
+
+        $stack = [];
+        $inStr = false;
+        $len = strlen($repaired);
+        for ($i = 0; $i < $len; $i++) {
+            $c = $repaired[$i];
+            if ($c === '"' && ($i === 0 || $repaired[$i - 1] !== '\\')) {
+                $inStr = !$inStr;
+
+                continue;
             }
-            while ($depth > 0) {
-                $repaired .= '}';
-                $depth--;
+            if ($inStr) {
+                continue;
+            }
+            if ($c === '{') {
+                $stack[] = '}';
+            } elseif ($c === '[') {
+                $stack[] = ']';
+            } elseif ($c === '}' || $c === ']') {
+                $top = $stack !== [] ? $stack[count($stack) - 1] : null;
+                if ($top === $c) {
+                    array_pop($stack);
+                }
             }
         }
 
+        if ($inStr) {
+            $repaired .= '"';
+        }
+
+        while ($stack !== []) {
+            $repaired .= array_pop($stack);
+        }
+
         return $repaired;
+    }
+
+    /**
+     * Tente d'extraire un objet partiel (titre + métadonnées) quand le JSON est tronqué.
+     *
+     * @return array<string, mixed>|null
+     */
+    function tutorial_extract_partial_tutorial(string $prepared): ?array
+    {
+        $repaired = tutorial_normalize_json_layout(tutorial_repair_truncated_json($prepared));
+        $parsed = json_decode($repaired, true);
+        if (is_array($parsed)) {
+            $title = $parsed['title'] ?? null;
+            if (is_string($title) && trim($title) !== '') {
+                return $parsed;
+            }
+        }
+
+        if (preg_match('/"title"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"/u', $prepared, $matches)) {
+            return ['title' => stripcslashes($matches[1])];
+        }
+
+        return null;
     }
 
     /**
@@ -561,11 +657,17 @@ PROMPT;
             error_log('[MecaBuddy] json_parse_failed. JSON error: ' . json_last_error_msg());
             error_log('[MecaBuddy] Raw LLM output (first 500 chars): ' . mb_substr($rawContent, 0, 500));
 
-            return [
+            $failure = [
                 'success' => false,
                 'error' => 'json_parse_failed',
                 'raw' => mb_substr($rawContent, 0, 500),
             ];
+            $partial = tutorial_extract_partial_tutorial($prepared);
+            if ($partial !== null && tutorial_is_missing_steps_only($partial)) {
+                $failure['partial'] = $partial;
+            }
+
+            return $failure;
         }
 
         $title = $parsed['title'] ?? null;
@@ -649,7 +751,7 @@ PROMPT;
             ];
         } else {
             $bodyExtras = [
-                'max_tokens' => 4096,
+                'max_tokens' => 8192,
                 'temperature' => 0.3,
             ];
         }
@@ -851,15 +953,21 @@ PROMPT;
      * @param array<string, mixed> $raw
      * @return array<string, mixed>|null
      */
-    function tutorial_normalize_llm_payload(array $raw): ?array
+    function tutorial_normalize_llm_payload(array $raw, ?array $vehicle = null): ?array
     {
+        $GLOBALS['_tutorial_normalize_vehicle'] = $vehicle;
+
         $title = trim((string) ($raw['title'] ?? ''));
         if ($title === '') {
+            unset($GLOBALS['_tutorial_normalize_vehicle']);
+
             return null;
         }
 
         $stepsRaw = $raw['steps'] ?? null;
         if (!is_array($stepsRaw) || $stepsRaw === []) {
+            unset($GLOBALS['_tutorial_normalize_vehicle']);
+
             return null;
         }
 
@@ -891,13 +999,26 @@ PROMPT;
                 continue;
             }
 
-            $stepsNorm[] = [
+            $stepOut = [
                 'title' => $st !== '' ? $st : 'Étape',
                 'description' => $desc,
             ];
+
+            if (!defined('TUTORIAL_VISUAL_SEARCH_LOADED')) {
+                require_once __DIR__ . '/tutorial_visual_search.php';
+            }
+            $vehicleCtx = $GLOBALS['_tutorial_normalize_vehicle'] ?? null;
+            $stepOut = array_merge(
+                $stepOut,
+                tutorial_visual_normalize_step_fields($s, is_array($vehicleCtx) ? $vehicleCtx : null)
+            );
+
+            $stepsNorm[] = $stepOut;
         }
 
         if ($stepsNorm === []) {
+            unset($GLOBALS['_tutorial_normalize_vehicle']);
+
             return null;
         }
 
@@ -952,7 +1073,12 @@ PROMPT;
             }
         }
 
-        return [
+        $preface = null;
+        if (isset($raw['preface']) && is_array($raw['preface'])) {
+            $preface = tutorial_normalize_preface($raw['preface']);
+        }
+
+        $out = [
             'title' => $title,
             'description' => trim((string) ($raw['description'] ?? '')),
             'estimated_time' => max(0, (int) ($raw['estimated_time'] ?? 0)),
@@ -962,6 +1088,59 @@ PROMPT;
             'danger_level' => $lvl,
             'global_warnings' => $gw,
             'steps' => $stepsNorm,
+        ];
+        if ($preface !== null) {
+            $out['preface'] = $preface;
+        }
+
+        unset($GLOBALS['_tutorial_normalize_vehicle']);
+
+        return $out;
+    }
+
+    /**
+     * @param array<string, mixed> $raw
+     * @return array<string, mixed>|null
+     */
+    function tutorial_normalize_preface(array $raw): ?array
+    {
+        $before = trim((string) ($raw['before_start'] ?? ''));
+        $whenPro = trim((string) ($raw['when_professional'] ?? ''));
+
+        $listFields = ['compatible_symptoms', 'other_causes', 'pre_checks'];
+        $lists = [];
+        foreach ($listFields as $key) {
+            $items = [];
+            if (isset($raw[$key]) && is_array($raw[$key])) {
+                foreach ($raw[$key] as $item) {
+                    if ($item === null) {
+                        continue;
+                    }
+                    $s = trim((string) $item);
+                    if ($s !== '' && strcasecmp($s, 'null') !== 0) {
+                        $items[] = $s;
+                    }
+                }
+            }
+            $lists[$key] = $items;
+        }
+
+        if (
+            $before === ''
+            && $whenPro === ''
+            && $lists['compatible_symptoms'] === []
+            && $lists['other_causes'] === []
+            && $lists['pre_checks'] === []
+        ) {
+            return null;
+        }
+
+        return [
+            'before_start' => $before,
+            'compatible_symptoms' => $lists['compatible_symptoms'],
+            'other_causes' => $lists['other_causes'],
+            'pre_checks' => $lists['pre_checks'],
+            'when_professional' => $whenPro,
         ];
     }
 }

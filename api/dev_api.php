@@ -603,6 +603,11 @@ function handle_rebuild_db(): void
             }
         }
 
+        if (!function_exists('migrateSQLiteDemoVehicles')) {
+            require_once __DIR__ . '/../includes/demo_vehicles.php';
+        }
+        migrateSQLiteDemoVehicles($pdo);
+
         if (!rebuild_db_table_exists($pdo, 'engine_types')) {
             $pdo->exec("CREATE TABLE engine_types (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -802,6 +807,38 @@ function handle_reset_demo_vehicles(): void
     ]);
 }
 
+/**
+ * Applique les migrations SQLite garage démo (colonnes demo_user_id, is_demo_seed).
+ */
+function handle_migrate_demo_schema(): void
+{
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        sendError('Méthode non autorisée', 405);
+    }
+
+    try {
+        $pdo = getSQLite();
+        migrateVehicleDemoSchema($pdo);
+        $ready = vehicleDemoSchemaIsReady($pdo);
+        $cols = vehicleDemoSchemaListColumns($pdo);
+
+        sendResponse([
+            'success' => $ready,
+            'sqlite_path' => SQLITE_PATH,
+            'sqlite_writable' => is_file(SQLITE_PATH) && is_writable(SQLITE_PATH),
+            'columns' => [
+                'demo_user_id' => in_array('demo_user_id', $cols, true),
+                'is_demo_seed' => in_array('is_demo_seed', $cols, true),
+            ],
+            'error' => $ready ? null : 'Migration incomplète — droits d’écriture sur data/ ou base verrouillée.',
+        ], $ready ? 200 : 500);
+    } catch (PDOException $e) {
+        sendError('Migration schéma garage : ' . $e->getMessage(), 500);
+    } catch (RuntimeException $e) {
+        sendError($e->getMessage(), 500);
+    }
+}
+
 function handle_rebuild_demo_vehicles(): void
 {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -874,6 +911,9 @@ try {
         case 'rebuild_demo_vehicles':
             handle_rebuild_demo_vehicles();
             break;
+        case 'migrate_demo_schema':
+            handle_migrate_demo_schema();
+            break;
         case 'get_demo_garages':
             handle_get_demo_garages();
             break;
@@ -881,7 +921,7 @@ try {
             handle_get_byok_stats();
             break;
         default:
-            sendError('Action non reconnue. Actions disponibles: save_settings, get_settings, test_plate, test_llm, test_search, rebuild_db, get_demo_users, reset_demo_usage_today, rebuild_demo_users, reset_demo_vehicles, rebuild_demo_vehicles, get_demo_garages, get_byok_stats', 400);
+            sendError('Action non reconnue. Actions disponibles: save_settings, get_settings, test_plate, test_llm, test_search, rebuild_db, migrate_demo_schema, get_demo_users, reset_demo_usage_today, rebuild_demo_users, reset_demo_vehicles, rebuild_demo_vehicles, get_demo_garages, get_byok_stats', 400);
     }
 } catch (Throwable $e) {
     if (APP_DEBUG) {

@@ -1,3 +1,4 @@
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+mock_db_diag.log

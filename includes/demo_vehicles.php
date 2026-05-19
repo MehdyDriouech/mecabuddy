@@ -39,21 +39,219 @@ const DEMO_VEHICLE_SLOT_TEMPLATES = [
     ],
 ];
 
-function migrateSQLiteDemoVehicles(PDO $pdo): void
+/**
+ * @return list<string>
+ */
+function vehicleDemoSchemaListColumns(PDO $pdo): array
 {
-    $columns = [];
-    foreach ($pdo->query('PRAGMA table_info(vehicles)') as $col) {
-        $columns[$col['name'] ?? ''] = true;
+    $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+    if ($driver === 'sqlite') {
+        $cols = $pdo->query('PRAGMA table_info(vehicles)')->fetchAll(PDO::FETCH_COLUMN, 1);
+
+        return is_array($cols) ? $cols : [];
+    }
+    if ($driver === 'mysql') {
+        $stmt = $pdo->query('SHOW COLUMNS FROM vehicles');
+        if ($stmt === false) {
+            return [];
+        }
+        $names = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            if (isset($row['Field'])) {
+                $names[] = (string) $row['Field'];
+            }
+        }
+
+        return $names;
     }
 
-    if (!isset($columns['demo_user_id'])) {
-        $pdo->exec('ALTER TABLE vehicles ADD COLUMN demo_user_id INTEGER NULL');
+    return [];
+}
+
+function vehicleDemoSchemaIsReady(PDO $pdo): bool
+{
+    $cols = vehicleDemoSchemaListColumns($pdo);
+
+    return in_array('demo_user_id', $cols, true) && in_array('is_demo_seed', $cols, true);
+}
+
+/**
+ * Migration garage démo (SQLite + MySQL).
+ */
+function migrateVehicleDemoSchema(PDO $pdo): void
+{
+    $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+    if ($driver === 'sqlite') {
+        migrateSQLiteDemoVehicles($pdo);
+    } elseif ($driver === 'mysql') {
+        migrateMysqlDemoVehicles($pdo);
     }
-    if (!isset($columns['is_demo_seed'])) {
-        $pdo->exec('ALTER TABLE vehicles ADD COLUMN is_demo_seed INTEGER NOT NULL DEFAULT 0');
+}
+
+function migrateMysqlDemoVehicles(PDO $pdo): void
+{
+    $stmt = $pdo->query(
+        "SELECT TABLE_NAME FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vehicles'"
+    );
+    if (!$stmt || $stmt->fetchColumn() === false) {
+        return;
+    }
+
+    $cols = vehicleDemoSchemaListColumns($pdo);
+    if (!in_array('demo_user_id', $cols, true)) {
+        $pdo->exec('ALTER TABLE vehicles ADD COLUMN demo_user_id INT NULL');
+    }
+    if (!in_array('is_demo_seed', $cols, true)) {
+        $pdo->exec('ALTER TABLE vehicles ADD COLUMN is_demo_seed TINYINT(1) NOT NULL DEFAULT 0');
+    }
+    try {
+        $pdo->exec('CREATE INDEX idx_vehicles_demo_user_id ON vehicles (demo_user_id)');
+    } catch (PDOException $e) {
+        // index déjà présent
+    }
+}
+
+/**
+ * Recrée la table vehicles (SQLite) si ALTER TABLE échoue (fichier verrouillé, schéma corrompu, etc.).
+ */
+function rebuildSqliteVehiclesTableForDemo(PDO $pdo): void
+{
+    $targetCols = [
+        'id',
+        'license_plate',
+        'brand',
+        'model',
+        'year',
+        'engine_type',
+        'engine_size',
+        'transmission',
+        'session_id',
+        'is_active',
+        'slot',
+        'demo_user_id',
+        'is_demo_seed',
+        'created_at',
+        'updated_at',
+    ];
+
+    $oldNames = vehicleDemoSchemaListColumns($pdo);
+    if ($oldNames === []) {
+        return;
+    }
+
+    $selectExprs = [];
+    foreach ($targetCols as $col) {
+        if (in_array($col, $oldNames, true)) {
+            $selectExprs[] = $col;
+            continue;
+        }
+        $selectExprs[] = match ($col) {
+            'demo_user_id' => 'NULL AS demo_user_id',
+            'is_demo_seed' => '0 AS is_demo_seed',
+            'is_active' => '0 AS is_active',
+            'created_at', 'updated_at' => "datetime('now') AS {$col}",
+            default => "NULL AS {$col}",
+        };
+    }
+
+    $pdo->exec('PRAGMA foreign_keys = OFF');
+    $pdo->beginTransaction();
+    try {
+        $pdo->exec("CREATE TABLE vehicles__demo_mig (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            license_plate VARCHAR(20) DEFAULT NULL,
+            brand VARCHAR(100) NOT NULL,
+            model VARCHAR(100) NOT NULL,
+            year INTEGER NOT NULL,
+            engine_type VARCHAR(50) DEFAULT NULL,
+            engine_size VARCHAR(20) DEFAULT NULL,
+            transmission VARCHAR(50) DEFAULT NULL,
+            session_id VARCHAR(128) DEFAULT NULL,
+            is_active INTEGER DEFAULT 0 CHECK (is_active IN (0, 1)),
+            slot INTEGER DEFAULT NULL CHECK (slot IS NULL OR slot IN (1, 2, 3)),
+            demo_user_id INTEGER DEFAULT NULL,
+            is_demo_seed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )");
+
+        $pdo->exec(
+            'INSERT INTO vehicles__demo_mig (' . implode(', ', $targetCols) . ')
+             SELECT ' . implode(', ', $selectExprs) . ' FROM vehicles'
+        );
+        $pdo->exec('DROP TABLE vehicles');
+        $pdo->exec('ALTER TABLE vehicles__demo_mig RENAME TO vehicles');
+
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_license_plate ON vehicles(license_plate)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_brand_model ON vehicles(brand, model)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_session_id ON vehicles(session_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_vehicles_demo_user_id ON vehicles(demo_user_id)');
+
+        $pdo->exec('CREATE TRIGGER IF NOT EXISTS trg_vehicles_updated_at
+            AFTER UPDATE ON vehicles
+            FOR EACH ROW
+            WHEN NEW.updated_at = OLD.updated_at
+            BEGIN
+                UPDATE vehicles SET updated_at = datetime(\'now\') WHERE id = OLD.id;
+            END');
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    } finally {
+        $pdo->exec('PRAGMA foreign_keys = ON');
+    }
+}
+
+function migrateSQLiteDemoVehicles(PDO $pdo): void
+{
+    $stmt = $pdo->query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='vehicles'"
+    );
+    if (!$stmt || $stmt->fetchColumn() === false) {
+        return;
+    }
+
+    $columns = array_fill_keys(vehicleDemoSchemaListColumns($pdo), true);
+
+    try {
+        if (!isset($columns['demo_user_id'])) {
+            $pdo->exec('ALTER TABLE vehicles ADD COLUMN demo_user_id INTEGER NULL');
+        }
+        if (!isset($columns['is_demo_seed'])) {
+            $pdo->exec('ALTER TABLE vehicles ADD COLUMN is_demo_seed INTEGER NOT NULL DEFAULT 0');
+        }
+    } catch (PDOException $e) {
+        if (APP_DEBUG) {
+            error_log('[MecaBuddy] ALTER vehicles (démo) : ' . $e->getMessage());
+        }
+    }
+
+    if (!vehicleDemoSchemaIsReady($pdo)) {
+        rebuildSqliteVehiclesTableForDemo($pdo);
     }
 
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_vehicles_demo_user_id ON vehicles(demo_user_id)');
+}
+
+/**
+ * @throws RuntimeException si le schéma garage démo reste incomplet
+ */
+function assertVehicleDemoSchemaReady(PDO $pdo): void
+{
+    migrateVehicleDemoSchema($pdo);
+    if (vehicleDemoSchemaIsReady($pdo)) {
+        return;
+    }
+
+    $path = defined('SQLITE_PATH') ? SQLITE_PATH : 'PDO';
+    throw new RuntimeException(
+        'Schéma garage démo incomplet (colonnes demo_user_id / is_demo_seed). '
+        . 'Fichier SQLite : ' . $path
+        . ' — vérifiez les droits d’écriture sur data/.'
+    );
 }
 
 function demo_vehicle_seed_license_plate(int $demoUserId, int $slot): string
