@@ -1,7 +1,0 @@
-# Mode A (DocumentRoot = public/) : exposer api/ du dépôt parent via réécriture
-<IfModule mod_rewrite.c>
-    RewriteEngine On
-    RewriteRule ^api/(.*)$ ../api/$1 [L,QSA]
-</IfModule>
-
-Options -Indexes
